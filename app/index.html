@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ad Builder · Diamond Horseshoe Productions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Abril+Fatface&family=Alfa+Slab+One&family=Bebas+Neue&family=Cinzel:wght@700&family=Great+Vibes&family=Inter:wght@400;500;600;700&family=Josefin+Sans:wght@600&family=Lobster&family=Monoton&family=Montserrat:wght@800&family=Oswald:wght@600&family=Pinyon+Script&family=Playfair+Display:wght@700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true">◆</span>
+    <div>
+      <div class="brand-name">Diamond Horseshoe Productions</div>
+      <div class="brand-sub">Ad Builder</div>
+    </div>
+  </div>
+  <nav class="menubar">
+    <div class="menu">
+      <button class="menu-btn" id="fileMenuBtn" aria-haspopup="true" aria-expanded="false">File</button>
+      <div class="menu-list" id="fileMenu" hidden>
+        <button data-action="new-act">Create Act…</button>
+        <button data-action="new-theatre">New Theatre…</button>
+        <button data-action="new-show">Create New Show…</button>
+        <hr>
+        <button data-action="backup-folder">Set up automatic backup folder…</button>
+        <button data-action="restore-folder">Restore from backup folder…</button>
+        <hr>
+        <button data-action="export">Save backup file…</button>
+        <button data-action="import">Restore from backup file…</button>
+      </div>
+    </div>
+  </nav>
+  <button class="backup-pill idle" id="backupStatus" data-action="backup-now">Set up backup</button>
+  <div class="top-actions">
+    <button class="btn" data-action="new-act">+ New Act</button>
+    <button class="btn" data-action="new-theatre">+ New Theatre</button>
+    <button class="btn primary" data-action="new-show">+ Create New Show</button>
+  </div>
+</header>
+
+<main id="main">
+  <section id="homeView">
+    <div class="tabs" role="tablist">
+      <button class="tab" data-tab="shows" role="tab">Shows <span class="count" id="countShows"></span></button>
+      <button class="tab" data-tab="acts" role="tab">Acts <span class="count" id="countActs"></span></button>
+      <button class="tab" data-tab="theatres" role="tab">Theatres <span class="count" id="countTheatres"></span></button>
+    </div>
+    <div id="tab-shows" class="tab-panel"></div>
+    <div id="tab-acts" class="tab-panel" hidden></div>
+    <div id="tab-theatres" class="tab-panel" hidden></div>
+  </section>
+  <section id="galleryView" hidden></section>
+</main>
+
+<!-- ============ Act editor ============ -->
+<dialog id="actDialog" class="editor wide">
+  <form id="actForm" novalidate>
+    <header class="dlg-head">
+      <h2 id="actDialogTitle">Create Act</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
+    </header>
+    <div class="dlg-body two-col">
+      <div class="col">
+        <label class="field"><span>Act name</span><input name="actName" required placeholder="Christmas with The Rat Pack"></label>
+
+        <fieldset>
+          <legend>Photos</legend>
+          <p class="hint">Add every photo you have of this act. Tick <b>Has title art</b> on photos that already show the name or logo, so the app never crops it off. Click a photo to mark where the faces are, so crops keep them in frame.</p>
+          <label class="dropzone" id="photoDrop">
+            <input type="file" id="photoInput" accept="image/png,image/jpeg,image/webp" multiple hidden>
+            <span>Drop photos here or <u>browse</u></span>
+          </label>
+          <div class="photo-grid" id="photoGrid"></div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Title on the ads</legend>
+          <p class="hint">Used on photos that don't already show the title. Upload a logo (a PNG with a see-through background works best) <i>or</i> type the title.</p>
+          <div class="logo-row">
+            <div class="logo-preview" id="logoPreview">No logo</div>
+            <label class="btn small">Upload logo<input type="file" id="logoInput" accept="image/png,image/jpeg,image/webp" hidden></label>
+            <button type="button" class="btn small ghost" id="logoRemove">Remove</button>
+          </div>
+          <div class="grid-2">
+            <label class="field"><span>Top line (script)</span><input name="pre" placeholder="Christmas"></label>
+            <label class="field"><span>Small connector word</span><input name="connector" placeholder="with"></label>
+            <label class="field"><span>Main title</span><input name="main" placeholder="THE RAT PACK"></label>
+            <label class="field"><span>Tagline</span><input name="sub" placeholder="TRIBUTE TO THE DOORS"></label>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Look</legend>
+          <div class="look-grid">
+            <span>Top line &amp; accent</span><select name="preFont" class="font-select"></select><input type="color" name="preColor">
+            <span>Main title</span><select name="mainFont" class="font-select"></select><input type="color" name="mainColor">
+            <span>Theatre &amp; date</span><select name="infoFont" class="font-select"></select><input type="color" name="infoColor">
+            <span>Background</span><span class="muted small">Behind title panels</span><input type="color" name="bgColor">
+          </div>
+          <label class="check"><input type="checkbox" name="infoGold"> Gold shine on theatre &amp; date text</label>
+        </fieldset>
+      </div>
+
+      <div class="col preview-col">
+        <div class="preview-head">
+          <h3>Preview</h3>
+          <label class="inline">Look <select id="actPreviewStyle"></select></label>
+        </div>
+        <p class="hint">Sample text: “Sample Theatre, Dec 6”.</p>
+        <div class="preview-grid" id="actPreview"></div>
+      </div>
+    </div>
+    <footer class="dlg-foot">
+      <button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" class="btn primary">Save act</button>
+    </footer>
+  </form>
+</dialog>
+
+<!-- ============ Theatre editor ============ -->
+<dialog id="theatreDialog" class="editor wide">
+  <form id="theatreForm" novalidate>
+    <header class="dlg-head">
+      <h2 id="theatreDialogTitle">New Theatre</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
+    </header>
+    <div class="dlg-body">
+      <div class="grid-4">
+        <label class="field span-2"><span>Profile name</span><input name="thName" required placeholder="Gillette, WY – Heritage Center"></label>
+        <label class="field span-2"><span>Name shown on the ads</span><input name="displayName" placeholder="Heritage Center"></label>
+        <label class="field span-2"><span>City</span><input name="city"></label>
+        <label class="field"><span>State</span><input name="state" maxlength="20"></label>
+      </div>
+
+      <fieldset>
+        <legend>Image requirements</legend>
+        <p class="hint">One row per size. <b>Count</b> is how many different images to make at that size. Turn off <b>Theatre &amp; date</b> for sizes that shouldn't name the venue (like a website feature). <b>Minimal</b> keeps only the title and dates, as large as possible (for marquees).</p>
+        <div class="table-wrap">
+          <table class="sizes">
+            <thead><tr><th>Label</th><th>Width</th><th></th><th>Height</th><th>Unit</th><th>Count</th><th title="Show theatre name and dates">Theatre &amp; date</th><th>Minimal</th><th></th></tr></thead>
+            <tbody id="sizeRows"></tbody>
+          </table>
+        </div>
+        <div class="row-tools">
+          <select id="addSizeSel"></select>
+          <button type="button" class="btn small" id="addSizeBtn">Add size</button>
+          <span class="sep"></span>
+          <select id="addPackSel"></select>
+          <button type="button" class="btn small" id="addPackBtn">Add pack</button>
+          <span class="grow"></span>
+          <span class="total">Total: <b id="sizeTotal">0</b> images</span>
+        </div>
+      </fieldset>
+
+      <label class="field"><span>Notes (other requests, contacts, deadlines…)</span><textarea name="notes" rows="4"></textarea></label>
+    </div>
+    <footer class="dlg-foot">
+      <button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" class="btn primary">Save theatre</button>
+    </footer>
+  </form>
+</dialog>
+
+<!-- ============ Show editor ============ -->
+<dialog id="showDialog" class="editor">
+  <form id="showForm" novalidate>
+    <header class="dlg-head">
+      <h2 id="showDialogTitle">Create New Show</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
+    </header>
+    <div class="dlg-body">
+      <label class="field"><span>Act</span><select name="actId"></select></label>
+      <label class="field"><span>Theatre</span><select name="theatreId"></select></label>
+
+      <fieldset>
+        <legend>Dates</legend>
+        <div id="dateRows" class="date-rows"></div>
+        <button type="button" class="btn small" id="addDateBtn">+ Add another date</button>
+        <label class="check"><input type="checkbox" name="showTimes"> Show the time on the ads</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Text on the ads</legend>
+        <div class="say">Ads will say: <b id="adTextPreview">—</b></div>
+        <label class="field"><span>Change the wording (optional, use | to split lines)</span><input name="customText" placeholder=""></label>
+        <label class="field"><span>Extra small line (optional)</span><input name="extraLine" placeholder="Tickets at the box office"></label>
+      </fieldset>
+
+      <fieldset>
+        <legend>How many images</legend>
+        <div class="count-row">
+          <input type="number" name="total" min="1" max="200" class="num">
+          <div class="chips" id="totalChips"></div>
+        </div>
+        <p class="hint" id="totalHint"></p>
+      </fieldset>
+    </div>
+    <footer class="dlg-foot">
+      <button type="button" class="btn ghost" data-close>Cancel</button>
+      <button type="submit" class="btn primary">Save &amp; create images</button>
+    </footer>
+  </form>
+</dialog>
+
+<div class="progress" id="progress" hidden>
+  <div class="progress-box">
+    <div id="progressText">Working…</div>
+    <div class="bar"><div id="progressBar"></div></div>
+  </div>
+</div>
+
+<input type="file" id="importFile" accept=".json,application/json" hidden>
+
+<script src="js/presets.js"></script>
+<script src="js/db.js"></script>
+<script src="js/zip.js"></script>
+<script src="js/render.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

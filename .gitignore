@@ -1,0 +1,14 @@
+# Only the app is published. Keep source artwork, venue notes and local tooling out of the repo.
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.txt
+*.zip
+*.json
+*.doc
+*.docx
+*.pdf
+*.xlsx
+!app/**
+.claude/
