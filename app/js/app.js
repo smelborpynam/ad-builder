@@ -732,6 +732,7 @@
       if (o) {
         if (o.photoId && act.photos.some((p) => p.id === o.photoId)) it.photoId = o.photoId;
         if (o.styleId) it.styleId = o.styleId;
+        if (o.adj && o.photoId === it.photoId) it.adj = o.adj;
       }
       it.included = !(show.excluded || []).includes(it.key);
     }
@@ -803,6 +804,15 @@
                   <select data-role="style" title="Look">${styleOpts(it)}</select>
                   <button class="icon-btn" data-role="dl" title="Download just this image">⤓</button>
                 </div>
+                ${act.photos.length ? `
+                <button class="btn small ghost adjust-btn" data-role="adjust">✥ Adjust crop${it.adj ? ' •' : ''}</button>
+                <div class="adjust-bar" hidden>
+                  <span class="muted">Drag the picture to move it</span>
+                  <button class="btn small" data-role="zoom-out" title="Zoom out">−</button>
+                  <button class="btn small" data-role="zoom-in" title="Zoom in">+</button>
+                  <button class="btn small ghost" data-role="reset">Reset</button>
+                  <button class="btn small primary" data-role="done">Done</button>
+                </div>` : ''}
               </div>`).join('')}
           </div>
         </section>`).join('')}
@@ -835,21 +845,110 @@
         }
         if (role === 'photo') {
           it.photoId = e.target.value;
+          it.adj = null;
           const photo = act.photos.find((p) => p.id === it.photoId);
           const styles = R.stylesFor(it.shape, photo);
           if (!styles.some((s) => s.id === it.styleId)) it.styleId = 'clean';
           card.querySelector('[data-role=style]').innerHTML = styleOpts(it);
         }
         if (role === 'style') it.styleId = e.target.value;
-        show.overrides = show.overrides || {};
-        show.overrides[it.key] = { photoId: it.photoId, styleId: it.styleId };
-        saveShowSoon(show);
+        saveOverride(show, it);
         renderCard(card, it, show, act, th);
       });
       card.querySelector('[data-role=dl]').addEventListener('click', () => downloadOne(it, show, act, th));
+      bindCropAdjust(card, it, show, act, th);
     });
 
     renderAllCards(view, items, show, act, th);
+  }
+
+  function saveOverride(show, it) {
+    show.overrides = show.overrides || {};
+    show.overrides[it.key] = { photoId: it.photoId, styleId: it.styleId, ...(it.adj ? { adj: it.adj } : {}) };
+    saveShowSoon(show);
+  }
+
+  // Lets the user drag the photo inside one image and zoom it, when the automatic crop is off.
+  function bindCropAdjust(card, it, show, act, th) {
+    const btn = card.querySelector('[data-role=adjust]');
+    if (!btn) return;
+    const bar = card.querySelector('.adjust-bar');
+    const canvas = card.querySelector('canvas');
+    const wrap = card.querySelector('.ad-canvas');
+    let drag = null;
+    let pending = false, dirty = false;
+
+    // At most one redraw in flight while dragging; the latest position is always drawn last.
+    const redraw = () => {
+      dirty = true;
+      if (pending) return;
+      pending = true;
+      setTimeout(async () => {
+        try {
+          while (dirty) { dirty = false; await renderCard(card, it, show, act, th); }
+        } finally { pending = false; }
+      }, 16);
+    };
+    const finish = () => {
+      saveOverride(show, it);
+      btn.textContent = `✥ Adjust crop${it.adj ? ' •' : ''}`;
+    };
+    const setEditing = (on) => {
+      bar.hidden = !on;
+      btn.hidden = on;
+      wrap.classList.toggle('adjusting', on);
+      if (!on) finish();
+    };
+    // Current placement, so the first drag starts from what's on screen.
+    const current = () => {
+      const m = canvas._meta;
+      if (!m) return null;
+      return m.mode === 'cover'
+        ? { fx: m.fx, fy: m.fy, zoom: m.zoom, ...(it.adj || {}) }
+        : { cx: m.cx, cy: m.cy, zoom: m.zoom, ...(it.adj || {}) };
+    };
+
+    btn.addEventListener('click', () => setEditing(true));
+    bar.addEventListener('click', (e) => {
+      const role = e.target.dataset.role;
+      if (role === 'done') { setEditing(false); return; }
+      if (role === 'reset') { it.adj = null; redraw(); return; }
+      if (role === 'zoom-in' || role === 'zoom-out') {
+        const a = current();
+        if (!a) return;
+        // A cropped photo can't zoom out past filling the frame; a whole photo can shrink a bit.
+        const min = canvas._meta.mode === 'cover' ? 1 : 0.4;
+        a.zoom = Math.min(3, Math.max(min, (a.zoom || 1) * (role === 'zoom-in' ? 1.12 : 1 / 1.12)));
+        it.adj = a;
+        redraw();
+      }
+    });
+
+    wrap.addEventListener('pointerdown', (e) => {
+      if (bar.hidden || !canvas._meta) return;
+      e.preventDefault();
+      try { wrap.setPointerCapture(e.pointerId); } catch { /* keeps working without capture */ }
+      drag = { x: e.clientX, y: e.clientY, start: current(), meta: canvas._meta, k: it.w / wrap.clientWidth };
+    });
+    wrap.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const dx = (e.clientX - drag.x) * drag.k, dy = (e.clientY - drag.y) * drag.k;
+      const { start, meta } = drag;
+      const a = { ...start };
+      if (meta.mode === 'cover') {
+        const lim = (v, half) => (half >= 0.5 ? 0.5 : Math.min(1 - half, Math.max(half, v)));
+        a.fx = lim(start.fx - (dx * meta.srcPerPx) / meta.iw, meta.halfX);
+        a.fy = lim(start.fy - (dy * meta.srcPerPx) / meta.ih, meta.halfY);
+      } else {
+        a.cx = Math.min(1, Math.max(0, start.cx + dx / meta.area.w));
+        a.cy = Math.min(1, Math.max(0, start.cy + dy / meta.area.h));
+      }
+      it.adj = a;
+      redraw();
+    });
+    const endDrag = () => { drag = null; };
+    wrap.addEventListener('pointerup', endDrag);
+    wrap.addEventListener('pointercancel', endDrag);
   }
 
   function setAllIncluded(show, on) {
@@ -876,10 +975,11 @@
     const photo = act.photos.find((p) => p.id === it.photoId) || null;
     const img = photo ? await loadImage(photo.id, photo.blob).catch(() => null) : null;
     const logoImg = act.logo ? await loadImage(act.logo.id, act.logo.blob).catch(() => null) : null;
-    R.render(canvas, {
+    canvas._meta = R.render(canvas, {
       w: it.w, h: it.h, scale, act, photo, img, logoImg,
       styleId: it.styleId, info: R.showInfo(show, th),
       localized: it.row.localized !== false, minimal: !!it.row.minimal, seed: it.key,
+      adjust: it.adj || undefined,
     });
   }
 

@@ -24,6 +24,7 @@ The folder holds `ad-builder-data.json` (all profiles), `photos/` (each photo sa
 2. **Theatres** (once per venue): *File → New Theatre*. It starts with the Google Ads pack (20 images: 8 landscape 1200×628, 8 square 1200×1200, 4 portrait 960×1200). Add or remove sizes and set how many of each. Use **in** for print sizes (300 dpi). **Duplicate** a theatre to start a similar one.
 3. **Shows**: *Create New Show*. Pick the act, theatre and dates. The ads read like “Mendel Center, Dec 6” automatically; you can change the wording. Choose how many images (theatre default, or 10/20/30…).
 4. In the gallery, untick any image you don't want, change the photo or look on any card, then **Download**.
+   If a crop looks off, click **✥ Adjust crop** on that image, drag the picture to move it, use **+ / −** to zoom, and click **Done** (**Reset** puts it back). Adjusted images show a dot on the button. To fix every image of a photo at once, edit the act and click where the faces are on that photo instead.
 
 ## How the images are made
 

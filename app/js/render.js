@@ -244,6 +244,7 @@ window.AdRender = (() => {
     return { x: box.x + (box.w - w) / 2, y: box.y + (box.h - h) / 2, w, h };
   }
 
+  // Crops the image to fill `r`, centred on (fx, fy). Returns the crop so callers can pan it.
   function drawCover(ctx, img, r, fx = 0.5, fy = 0.4, zoom = 1) {
     const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
     const ra = r.w / r.h;
@@ -253,6 +254,7 @@ window.AdRender = (() => {
     const sx = Math.min(Math.max(fx * iw - sw / 2, 0), iw - sw);
     const sy = Math.min(Math.max(fy * ih - sh / 2, 0), ih - sh);
     ctx.drawImage(img, sx, sy, sw, sh, r.x, r.y, r.w, r.h);
+    return { iw, ih, sw, sh, fx: (sx + sw / 2) / iw, fy: (sy + sh / 2) / ih };
   }
 
   // Blurred, darkened copy of the photo filling `r` (used behind full "contain" photos).
@@ -357,7 +359,9 @@ window.AdRender = (() => {
   }
 
   // ---------- Photo layer ----------
-  function drawPhotoLayer(W, H, scale, shape, photo, img, L, styleId, act) {
+  // adj (optional, set by hand in the gallery): { fx, fy } crop centre for cropped photos,
+  // { cx, cy } position for whole photos, and zoom for both.
+  function drawPhotoLayer(W, H, scale, shape, photo, img, L, styleId, act, adj = {}) {
     const c = document.createElement('canvas');
     c.width = Math.max(1, Math.round(W * scale));
     c.height = Math.max(1, Math.round(H * scale));
@@ -370,19 +374,26 @@ window.AdRender = (() => {
     // Photos with title art are never cropped by more than a sliver, so the title stays whole.
     const contain = shape !== 'strip' && (styleId === 'backdrop' || (photo.hasTitle && mismatch > 0.02));
 
+    const zoom = adj.zoom || 1;
+    let meta;
     if (contain) {
       drawBlurred(g, img, r, scale);
       // Near-matching shapes fill the whole frame; very different shapes sit between the text areas.
       const cr = mismatch < 0.12 && styleId !== 'backdrop' ? r : (L.containRect || r);
       const inset = cr === r ? 0 : Math.min(cr.w, cr.h) * 0.03;
       const fit = containFit(iw, ih, { x: cr.x + inset, y: cr.y + inset, w: cr.w - inset * 2, h: cr.h - inset * 2 });
+      const cx = adj.cx ?? 0.5, cy = adj.cy ?? 0.5;
+      const w = fit.w * zoom, h = fit.h * zoom;
+      const x = cr.x + cr.w * cx - w / 2, y = cr.y + cr.h * cy - h / 2;
       g.save();
       g.shadowColor = 'rgba(0,0,0,0.6)';
       g.shadowBlur = Math.min(W, H) * 0.03;
-      g.drawImage(img, fit.x, fit.y, fit.w, fit.h);
+      g.drawImage(img, x, y, w, h);
       g.restore();
+      meta = { mode: 'contain', cx, cy, zoom, area: cr };
     } else {
-      drawCover(g, img, r, photo.fx ?? 0.5, photo.fy ?? 0.4, styleId === 'zoom' ? 1.35 : 1);
+      const crop = drawCover(g, img, r, adj.fx ?? photo.fx ?? 0.5, adj.fy ?? photo.fy ?? 0.4, (styleId === 'zoom' ? 1.35 : 1) * zoom);
+      meta = { mode: 'cover', fx: crop.fx, fy: crop.fy, zoom, srcPerPx: crop.sw / r.w, iw: crop.iw, ih: crop.ih, halfX: crop.sw / 2 / crop.iw, halfY: crop.sh / 2 / crop.ih };
     }
 
     const fill = (op, color, alpha = 1) => {
@@ -411,7 +422,7 @@ window.AdRender = (() => {
       g.fillRect(Math.min(x0, x1), r.y, f.size, r.h);
       g.globalCompositeOperation = 'source-over';
     }
-    return c;
+    return { canvas: c, meta };
   }
 
   // ---------- Decorations ----------
@@ -616,7 +627,8 @@ window.AdRender = (() => {
   }
 
   // ---------- Main entry ----------
-  // o: { w, h, scale, act, photo, img, logoImg, styleId, info, localized, minimal, seed }
+  // o: { w, h, scale, act, photo, img, logoImg, styleId, info, localized, minimal, seed, adjust }
+  // Returns how the photo was placed (or null), which the gallery uses for dragging.
   function render(canvas, o) {
     const W = o.w, H = o.h, scale = o.scale || 1;
     canvas.width = Math.max(1, Math.round(W * scale));
@@ -646,13 +658,15 @@ window.AdRender = (() => {
       ctx.fillRect(p.x, p.y, p.w, p.h);
     }
 
+    let meta = null;
     if (photo) {
-      const layer = drawPhotoLayer(W, H, scale, shape, photo, o.img, L, styleId, act);
+      const layer = drawPhotoLayer(W, H, scale, shape, photo, o.img, L, styleId, act, o.adjust || {});
+      meta = layer.meta;
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
-      ctx.drawImage(layer, 0, 0);
+      ctx.drawImage(layer.canvas, 0, 0);
       ctx.restore();
-      layer.width = layer.height = 0;
+      layer.canvas.width = layer.canvas.height = 0;
     }
 
     const rand = rng(hashStr(String(o.seed || 'seed') + styleId));
@@ -670,6 +684,7 @@ window.AdRender = (() => {
       drawInfo(ctx, L.infoBox, o.info, act, { minimal: !!o.minimal, cap: o.minimal ? cap * 1.4 : cap });
     }
     if (styleId === 'frame') drawFrame(ctx, W, H, s.mainColor || '#d9b45a');
+    return meta;
   }
 
   return {
