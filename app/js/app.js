@@ -733,6 +733,7 @@
         if (o.photoId && act.photos.some((p) => p.id === o.photoId)) it.photoId = o.photoId;
         if (o.styleId) it.styleId = o.styleId;
         if (o.adj && o.photoId === it.photoId) it.adj = o.adj;
+        if (o.text) it.text = o.text;
       }
       it.included = !(show.excluded || []).includes(it.key);
     }
@@ -804,15 +805,25 @@
                   <select data-role="style" title="Look">${styleOpts(it)}</select>
                   <button class="icon-btn" data-role="dl" title="Download just this image">⤓</button>
                 </div>
-                ${act.photos.length ? `
-                <button class="btn small ghost adjust-btn" data-role="adjust">✥ Adjust crop${it.adj ? ' •' : ''}</button>
-                <div class="adjust-bar" hidden>
+                <div class="edit-row">
+                  ${act.photos.length ? `<button class="btn small ghost" data-role="adjust">${cropLabel(it)}</button>` : ''}
+                  <button class="btn small ghost" data-role="words">${wordsLabel(it)}</button>
+                </div>
+                <div class="adjust-bar" data-bar="crop" hidden>
                   <span class="muted">Drag the picture to move it</span>
                   <button class="btn small" data-role="zoom-out" title="Zoom out">−</button>
                   <button class="btn small" data-role="zoom-in" title="Zoom in">+</button>
                   <button class="btn small ghost" data-role="reset">Reset</button>
                   <button class="btn small primary" data-role="done">Done</button>
-                </div>` : ''}
+                </div>
+                <div class="adjust-bar words-bar" data-bar="words" hidden>
+                  <span class="muted">Drag words to move them. Editing: <b data-role="sel-name"></b></span>
+                  <select data-role="text-fx" title="Effect on these words">${R.TEXT_EFFECTS.map((f) => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select>
+                  <button class="btn small" data-role="text-smaller" title="Smaller">−</button>
+                  <button class="btn small" data-role="text-bigger" title="Bigger">+</button>
+                  <button class="btn small ghost" data-role="text-reset" title="Put these words back">Reset</button>
+                  <button class="btn small primary" data-role="done">Done</button>
+                </div>
               </div>`).join('')}
           </div>
         </section>`).join('')}
@@ -843,6 +854,7 @@
           updateDownloadLabel();
           return;
         }
+        if (role !== 'photo' && role !== 'style') return;
         if (role === 'photo') {
           it.photoId = e.target.value;
           it.adj = null;
@@ -856,7 +868,7 @@
         renderCard(card, it, show, act, th);
       });
       card.querySelector('[data-role=dl]').addEventListener('click', () => downloadOne(it, show, act, th));
-      bindCropAdjust(card, it, show, act, th);
+      bindCardEditing(card, it, show, act, th);
     });
 
     renderAllCards(view, items, show, act, th);
@@ -864,17 +876,29 @@
 
   function saveOverride(show, it) {
     show.overrides = show.overrides || {};
-    show.overrides[it.key] = { photoId: it.photoId, styleId: it.styleId, ...(it.adj ? { adj: it.adj } : {}) };
+    show.overrides[it.key] = {
+      photoId: it.photoId, styleId: it.styleId,
+      ...(it.adj ? { adj: it.adj } : {}),
+      ...(it.text ? { text: it.text } : {}),
+    };
     saveShowSoon(show);
   }
 
-  // Lets the user drag the photo inside one image and zoom it, when the automatic crop is off.
-  function bindCropAdjust(card, it, show, act, th) {
-    const btn = card.querySelector('[data-role=adjust]');
-    if (!btn) return;
-    const bar = card.querySelector('.adjust-bar');
+  const cropLabel = (it) => `✥ Adjust crop${it.adj ? ' •' : ''}`;
+  const wordsLabel = (it) => `✎ Edit words${it.text ? ' •' : ''}`;
+  const TEXT_NAMES = { title: 'Title', info: 'Theatre & date' };
+
+  // Hand edits on one image: drag/zoom the photo ("crop"), or move/resize/style the words ("words").
+  function bindCardEditing(card, it, show, act, th) {
     const canvas = card.querySelector('canvas');
     const wrap = card.querySelector('.ad-canvas');
+    const editRow = card.querySelector('.edit-row');
+    const cropBtn = card.querySelector('[data-role=adjust]');
+    const wordsBtn = card.querySelector('[data-role=words]');
+    const bars = { crop: card.querySelector('[data-bar=crop]'), words: card.querySelector('[data-bar=words]') };
+    const fxSelect = bars.words.querySelector('[data-role=text-fx]');
+    const selName = bars.words.querySelector('[data-role=sel-name]');
+    let mode = null;
     let drag = null;
     let pending = false, dirty = false;
 
@@ -889,64 +913,150 @@
         } finally { pending = false; }
       }, 16);
     };
-    const finish = () => {
-      saveOverride(show, it);
-      btn.textContent = `✥ Adjust crop${it.adj ? ' •' : ''}`;
+    const changed = () => { saveOverride(show, it); redraw(); };
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+    // ----- words helpers -----
+    const blocks = () => (canvas._meta && canvas._meta.text) || {};
+    const textOf = (k) => (it.text && it.text[k]) || {};
+    const setText = (k, patch) => {
+      const next = { ...textOf(k), ...patch };
+      Object.keys(next).forEach((key) => next[key] === undefined && delete next[key]);
+      const all = { ...(it.text || {}), [k]: next };
+      if (!Object.keys(next).length) delete all[k];
+      it.text = Object.keys(all).length ? all : null;
     };
-    const setEditing = (on) => {
-      bar.hidden = !on;
-      btn.hidden = on;
-      wrap.classList.toggle('adjusting', on);
-      if (!on) finish();
+    const select = (k) => {
+      card._outline = k;
+      card._lastBlock = k;
+      selName.textContent = TEXT_NAMES[k] || '';
+      fxSelect.value = textOf(k).fx || 'none';
     };
-    // Current placement, so the first drag starts from what's on screen.
+
+    // ----- crop helper: current placement, so the first drag starts from what's on screen -----
     const current = () => {
-      const m = canvas._meta;
+      const m = canvas._meta && canvas._meta.photo;
       if (!m) return null;
       return m.mode === 'cover'
         ? { fx: m.fx, fy: m.fy, zoom: m.zoom, ...(it.adj || {}) }
         : { cx: m.cx, cy: m.cy, zoom: m.zoom, ...(it.adj || {}) };
     };
 
-    btn.addEventListener('click', () => setEditing(true));
-    bar.addEventListener('click', (e) => {
-      const role = e.target.dataset.role;
-      if (role === 'done') { setEditing(false); return; }
-      if (role === 'reset') { it.adj = null; redraw(); return; }
-      if (role === 'zoom-in' || role === 'zoom-out') {
-        const a = current();
-        if (!a) return;
-        // A cropped photo can't zoom out past filling the frame; a whole photo can shrink a bit.
-        const min = canvas._meta.mode === 'cover' ? 1 : 0.4;
-        a.zoom = Math.min(3, Math.max(min, (a.zoom || 1) * (role === 'zoom-in' ? 1.12 : 1 / 1.12)));
-        it.adj = a;
-        redraw();
+    const setMode = (m) => {
+      if (mode && !m) saveOverride(show, it);
+      mode = m;
+      bars.crop.hidden = m !== 'crop';
+      bars.words.hidden = m !== 'words';
+      editRow.hidden = !!m;
+      wrap.classList.toggle('adjusting', !!m);
+      card._outline = null;
+      if (m === 'words') {
+        const b = blocks();
+        if (!b.title && !b.info) { alert('This image has no words to edit.'); setMode(null); return; }
+        select(card._lastBlock && b[card._lastBlock] ? card._lastBlock : (b.title ? 'title' : 'info'));
+      }
+      if (cropBtn) cropBtn.textContent = cropLabel(it);
+      wordsBtn.textContent = wordsLabel(it);
+      redraw();
+    };
+
+    if (cropBtn) cropBtn.addEventListener('click', () => setMode('crop'));
+    wordsBtn.addEventListener('click', () => setMode('words'));
+    fxSelect.addEventListener('change', () => {
+      setText(card._outline, { fx: fxSelect.value === 'none' ? undefined : fxSelect.value });
+      changed();
+    });
+
+    card.addEventListener('click', (e) => {
+      const role = e.target.dataset && e.target.dataset.role;
+      if (!mode || !role) return;
+      if (role === 'done') { setMode(null); return; }
+      if (mode === 'crop') {
+        if (role === 'reset') { it.adj = null; changed(); }
+        if (role === 'zoom-in' || role === 'zoom-out') {
+          const a = current();
+          if (!a) return;
+          // A cropped photo can't zoom out past filling the frame; a whole photo can shrink a bit.
+          const min = canvas._meta.photo.mode === 'cover' ? 1 : 0.4;
+          a.zoom = clamp((a.zoom || 1) * (role === 'zoom-in' ? 1.12 : 1 / 1.12), min, 3);
+          it.adj = a;
+          changed();
+        }
+      } else {
+        const k = card._outline;
+        if (role === 'text-reset') { setText(k, { dx: undefined, dy: undefined, s: undefined, fx: undefined }); select(k); changed(); }
+        if (role === 'text-bigger' || role === 'text-smaller') {
+          const s = textOf(k).s || 1;
+          setText(k, { s: clamp(s * (role === 'text-bigger' ? 1.1 : 1 / 1.1), 0.4, 2.5) });
+          changed();
+        }
       }
     });
 
+    // ----- dragging -----
+    const toImage = (e) => {
+      const r = wrap.getBoundingClientRect();
+      return { x: ((e.clientX - r.left) * it.w) / r.width, y: ((e.clientY - r.top) * it.h) / r.height };
+    };
+    // Which words are under the pointer (with a little slack); the closer centre wins if both.
+    const hit = (p) => {
+      const b = blocks();
+      const m = Math.min(it.w, it.h) * 0.04;
+      let best = null;
+      for (const k of ['title', 'info']) {
+        const r = b[k];
+        if (!r || p.x < r.x - m || p.x > r.x + r.w + m || p.y < r.y - m || p.y > r.y + r.h + m) continue;
+        const d = Math.hypot(p.x - (r.x + r.w / 2), p.y - (r.y + r.h / 2));
+        if (!best || d < best.d) best = { k, d };
+      }
+      return best && best.k;
+    };
+
     wrap.addEventListener('pointerdown', (e) => {
-      if (bar.hidden || !canvas._meta) return;
+      if (!mode || !canvas._meta) return;
       e.preventDefault();
+      const k = it.w / wrap.clientWidth;
+      if (mode === 'crop') {
+        if (!canvas._meta.photo) return;
+        drag = { kind: 'crop', x: e.clientX, y: e.clientY, start: current(), meta: canvas._meta.photo, k };
+      } else {
+        const block = hit(toImage(e));
+        if (!block) return;
+        if (block !== card._outline) { select(block); redraw(); }
+        const t = textOf(block);
+        drag = { kind: 'words', block, x: e.clientX, y: e.clientY, start: { dx: t.dx || 0, dy: t.dy || 0 }, k, bounds: blocks()[block] };
+      }
       try { wrap.setPointerCapture(e.pointerId); } catch { /* keeps working without capture */ }
-      drag = { x: e.clientX, y: e.clientY, start: current(), meta: canvas._meta, k: it.w / wrap.clientWidth };
     });
     wrap.addEventListener('pointermove', (e) => {
       if (!drag) return;
       const dx = (e.clientX - drag.x) * drag.k, dy = (e.clientY - drag.y) * drag.k;
-      const { start, meta } = drag;
-      const a = { ...start };
-      if (meta.mode === 'cover') {
-        const lim = (v, half) => (half >= 0.5 ? 0.5 : Math.min(1 - half, Math.max(half, v)));
-        a.fx = lim(start.fx - (dx * meta.srcPerPx) / meta.iw, meta.halfX);
-        a.fy = lim(start.fy - (dy * meta.srcPerPx) / meta.ih, meta.halfY);
+      const { start } = drag;
+      if (drag.kind === 'crop') {
+        const meta = drag.meta;
+        const a = { ...start };
+        if (meta.mode === 'cover') {
+          const lim = (v, half) => (half >= 0.5 ? 0.5 : clamp(v, half, 1 - half));
+          a.fx = lim(start.fx - (dx * meta.srcPerPx) / meta.iw, meta.halfX);
+          a.fy = lim(start.fy - (dy * meta.srcPerPx) / meta.ih, meta.halfY);
+        } else {
+          a.cx = clamp(start.cx + dx / meta.area.w, 0, 1);
+          a.cy = clamp(start.cy + dy / meta.area.h, 0, 1);
+        }
+        it.adj = a;
       } else {
-        a.cx = Math.min(1, Math.max(0, start.cx + dx / meta.area.w));
-        a.cy = Math.min(1, Math.max(0, start.cy + dy / meta.area.h));
+        // Stop at the picture's edge (the image keeps words inside anyway), so dragging back responds at once.
+        const b = drag.bounds, m = Math.min(it.w, it.h) * R.TEXT_MARGIN;
+        const mx = clamp(dx, m - b.x, it.w - m - (b.x + b.w));
+        const my = clamp(dy, m - b.y, it.h - m - (b.y + b.h));
+        setText(drag.block, { dx: start.dx + mx / it.w, dy: start.dy + my / it.h });
       }
-      it.adj = a;
       redraw();
     });
-    const endDrag = () => { drag = null; };
+    const endDrag = () => {
+      if (drag) saveOverride(show, it);
+      drag = null;
+    };
     wrap.addEventListener('pointerup', endDrag);
     wrap.addEventListener('pointercancel', endDrag);
   }
@@ -970,7 +1080,8 @@
     btn.disabled = !n;
   }
 
-  async function renderItem(canvas, it, show, act, th, scale) {
+  // outline: name of the selected text block while editing words (preview only).
+  async function renderItem(canvas, it, show, act, th, scale, outline) {
     await fontsReady;
     const photo = act.photos.find((p) => p.id === it.photoId) || null;
     const img = photo ? await loadImage(photo.id, photo.blob).catch(() => null) : null;
@@ -980,13 +1091,15 @@
       styleId: it.styleId, info: R.showInfo(show, th),
       localized: it.row.localized !== false, minimal: !!it.row.minimal, seed: it.key,
       adjust: it.adj || undefined,
+      textAdjust: it.text || undefined,
+      outlineText: outline || undefined,
     });
   }
 
   const previewScale = (it) => Math.min(1, 640 / Math.max(it.w, it.h));
 
   async function renderCard(card, it, show, act, th) {
-    await renderItem(card.querySelector('canvas'), it, show, act, th, previewScale(it));
+    await renderItem(card.querySelector('canvas'), it, show, act, th, previewScale(it), card._outline);
   }
 
   async function renderAllCards(view, items, show, act, th) {

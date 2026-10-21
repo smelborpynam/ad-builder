@@ -25,6 +25,7 @@ The folder holds `ad-builder-data.json` (all profiles), `photos/` (each photo sa
 3. **Shows**: *Create New Show*. Pick the act, theatre and dates. The ads read like “Mendel Center, Dec 6” automatically; you can change the wording. Choose how many images (theatre default, or 10/20/30…).
 4. In the gallery, untick any image you don't want, change the photo or look on any card, then **Download**.
    If a crop looks off, click **✥ Adjust crop** on that image, drag the picture to move it, use **+ / −** to zoom, and click **Done** (**Reset** puts it back). Adjusted images show a dot on the button. To fix every image of a photo at once, edit the act and click where the faces are on that photo instead.
+   To fix the words, click **✎ Edit words**. Dashed outlines show the title and the theatre & date; click one to pick it (gold outline), drag it to move it, use **+ / −** to resize it, and choose an **Effect** for just those words (Sparkle, Glow, Gold shine, Outline, Neon, Dark backing, 3D shadow). Words always stay inside the picture. **Reset** puts the picked words back.
 
 ## How the images are made
 

@@ -429,7 +429,7 @@ window.AdRender = (() => {
   function drawShades(ctx, W, H, L) {
     const boxes = [L.titleBox, L.infoBox].filter(Boolean);
     if (L.bottomShade) {
-      const yTop = Math.min(...boxes.filter((b) => b.y >= H / 2).map((b) => b.y - b.h * 1.3), H * 0.75);
+      const yTop = Math.min(...boxes.filter((b) => b.y + b.h / 2 >= H / 2).map((b) => b.y - b.h * 1.3), H * 0.75);
       const g = ctx.createLinearGradient(0, yTop, 0, H);
       g.addColorStop(0, 'rgba(0,0,0,0)');
       g.addColorStop(0.5, `rgba(0,0,0,${L.bottomShade * 0.8})`);
@@ -438,7 +438,7 @@ window.AdRender = (() => {
       ctx.fillRect(0, yTop, W, H - yTop);
     }
     if (L.topShade) {
-      const yBot = Math.max(...boxes.filter((b) => b.y < H / 2).map((b) => b.y + b.h * 2.3), H * 0.25);
+      const yBot = Math.max(...boxes.filter((b) => b.y + b.h / 2 < H / 2).map((b) => b.y + b.h * 2.3), H * 0.25);
       const g = ctx.createLinearGradient(0, 0, 0, yBot);
       g.addColorStop(0, `rgba(0,0,0,${Math.min(0.9, L.topShade * 1.5)})`);
       g.addColorStop(0.5, `rgba(0,0,0,${L.topShade * 0.75})`);
@@ -517,6 +517,7 @@ window.AdRender = (() => {
   }
 
   // ---------- Text ----------
+  // Both text painters return the area actually covered, so the gallery can let people drag it.
   function drawTitle(ctx, box, act, logoImg) {
     if (logoImg) {
       const fit = containFit(logoImg.naturalWidth || logoImg.width, logoImg.naturalHeight || logoImg.height, box);
@@ -524,7 +525,7 @@ window.AdRender = (() => {
       shadowFor(ctx, fit.h * 0.25);
       ctx.drawImage(logoImg, fit.x, fit.y, fit.w, fit.h);
       ctx.restore();
-      return;
+      return fit;
     }
     const t = act.title || {}, s = act.style;
     const hasPre = !!(t.pre && t.pre.trim());
@@ -533,7 +534,7 @@ window.AdRender = (() => {
     if (t.connector && t.connector.trim()) lines.push({ text: t.connector.trim(), family: s.infoFont, ratio: 0.34, lh: 1.5, color: s.mainColor, ls: 0.04, flank: true });
     if (t.main && t.main.trim()) lines.push({ text: t.main.trim(), family: s.mainFont, ratio: hasPre ? 0.62 : 1, lh: 1.12, color: s.mainColor, ls: 0.05 });
     if (t.sub && t.sub.trim()) lines.push({ text: t.sub.trim(), family: s.mainFont, ratio: hasPre ? 0.24 : 0.3, lh: 1.6, color: s.mainColor, ls: 0.18, flank: true });
-    if (!lines.length) return;
+    if (!lines.length) return null;
 
     // Measure everything at size 100, then scale to fit the box.
     ctx.save();
@@ -552,6 +553,7 @@ window.AdRender = (() => {
     const bw = blockW * k;
     const cx = box.x + box.w / 2;
     let y = box.y + (box.h - blockH * k) / 2;
+    const bounds = { x: cx - bw / 2, y, w: bw, h: blockH * k };
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     for (const l of lines) {
@@ -577,6 +579,7 @@ window.AdRender = (() => {
     }
     setSpacing(ctx, 0);
     ctx.restore();
+    return bounds;
   }
 
   function drawInfo(ctx, box, info, act, opts) {
@@ -586,7 +589,7 @@ window.AdRender = (() => {
     else if (info.venue && info.dates) candidates = [[`${info.venue}, ${info.dates}`], [info.venue, info.dates]];
     else candidates = [[info.venue || info.dates]];
     candidates = candidates.map((c) => c.filter(Boolean)).filter((c) => c.length);
-    if (!candidates.length) return;
+    if (!candidates.length) return null;
 
     const fam = act.style.infoFont;
     const lh = 1.18;
@@ -605,11 +608,12 @@ window.AdRender = (() => {
       }
       const size = Math.min(100 * Math.min(box.w / maxW, box.h / totalH), opts.cap);
       const score = size * (lines.length === 1 ? 1.25 : 1);
-      if (!best || score > best.score) best = { lines, size, score, totalH: (totalH / 100) * size };
+      if (!best || score > best.score) best = { lines, size, score, totalH: (totalH / 100) * size, w: (maxW / 100) * size };
     }
     const { lines, size } = best;
     let y = box.y + (box.h - best.totalH) / 2;
     const cx = box.x + box.w / 2;
+    const bounds = { x: cx - best.w / 2, y, w: best.w, h: best.totalH };
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const paint = (text, sz, lineH) => {
@@ -624,11 +628,215 @@ window.AdRender = (() => {
     if (extra) paint(extra, size * extraRatio, size * extraRatio * 1.35);
     noShadow(ctx);
     ctx.restore();
+    return bounds;
+  }
+
+  // Moves/resizes a text box by a hand adjustment { dx, dy } (fractions of the image) and s (size).
+  function adjustBox(b, a, W, H) {
+    if (!b || !a) return b;
+    const s = a.s || 1;
+    const w = b.w * s, h = b.h * s;
+    return { x: b.x + (b.w - w) / 2 + (a.dx || 0) * W, y: b.y + (b.h - h) / 2 + (a.dy || 0) * H, w, h };
+  }
+
+  // ---------- Text effects (applied to the words only) ----------
+  const TEXT_EFFECTS = [
+    { id: 'none', name: 'No effect' },
+    { id: 'sparkle', name: 'Sparkle' },
+    { id: 'glow', name: 'Glow' },
+    { id: 'gold', name: 'Gold shine' },
+    { id: 'outline', name: 'Outline' },
+    { id: 'neon', name: 'Neon' },
+    { id: 'plate', name: 'Dark backing' },
+    { id: 'shadow3d', name: '3D shadow' },
+  ];
+
+  function blankLike(ctx) {
+    const c = document.createElement('canvas');
+    c.width = ctx.canvas.width;
+    c.height = ctx.canvas.height;
+    return c;
+  }
+
+  // Same shape as `layer`, filled with one colour or gradient (in image coordinates).
+  function silhouette(layer, fill, scale) {
+    const c = blankLike(layer.getContext('2d'));
+    const g = c.getContext('2d');
+    g.drawImage(layer, 0, 0);
+    g.globalCompositeOperation = 'source-in';
+    g.setTransform(scale, 0, 0, scale, 0, 0);
+    g.fillStyle = fill;
+    g.fillRect(0, 0, c.width / scale, c.height / scale);
+    return c;
+  }
+
+  // Draws one text block through `paint(ctx)` (which returns its bounds) with an optional effect.
+  function drawTextBlock(ctx, scale, effect, paint, style, rand) {
+    if (!effect || effect === 'none') return paint(ctx);
+    const layer = blankLike(ctx);
+    const lc = layer.getContext('2d');
+    lc.setTransform(scale, 0, 0, scale, 0, 0);
+    lc.imageSmoothingQuality = 'high';
+    const b = paint(lc);
+    if (!b) return null;
+
+    const u = Math.max(4, Math.min(b.h, b.w * 0.5)); // effect size, in image units
+    const put = (src, opts = {}) => {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      if (opts.op) ctx.globalCompositeOperation = opts.op;
+      if (opts.alpha != null) ctx.globalAlpha = opts.alpha;
+      if (opts.glow) { ctx.shadowColor = opts.glow; ctx.shadowBlur = opts.blur * scale; }
+      ctx.drawImage(src, (opts.dx || 0) * scale, (opts.dy || 0) * scale);
+      ctx.restore();
+    };
+    const gold = style.mainColor || '#d9b45a';
+
+    switch (effect) {
+      case 'plate': {
+        const p = u * 0.22;
+        ctx.save();
+        ctx.fillStyle = 'rgba(0,0,0,0.62)';
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(b.x - p * 1.4, b.y - p, b.w + p * 2.8, b.h + p * 2, p);
+        else ctx.rect(b.x - p * 1.4, b.y - p, b.w + p * 2.8, b.h + p * 2);
+        ctx.fill();
+        ctx.restore();
+        put(layer);
+        break;
+      }
+      case 'glow':
+        put(layer, { glow: rgba(gold, 1), blur: u * 0.5 });
+        put(layer, { glow: rgba('#fff1c4', 1), blur: u * 0.25 });
+        put(layer, { glow: rgba('#fff1c4', 0.8), blur: u * 0.12 });
+        break;
+      case 'neon': {
+        const color = style.preColor || '#ff3b6b';
+        put(layer, { glow: color, blur: u * 0.5 });
+        put(layer, { glow: color, blur: u * 0.25 });
+        put(layer, { op: 'lighter', alpha: 0.35 });
+        break;
+      }
+      case 'outline': {
+        const sil = silhouette(layer, '#000000', scale);
+        const r = Math.max(1.5, u * 0.045);
+        for (let i = 0; i < 16; i++) {
+          const a = (i / 16) * Math.PI * 2;
+          put(sil, { dx: Math.cos(a) * r, dy: Math.sin(a) * r });
+        }
+        put(layer);
+        break;
+      }
+      case 'shadow3d': {
+        const sil = silhouette(layer, 'rgba(0,0,0,0.9)', scale);
+        const depth = Math.max(2, u * 0.09);
+        const steps = Math.min(24, Math.ceil(depth * scale));
+        for (let i = steps; i >= 1; i--) put(sil, { dx: (depth * i) / steps, dy: (depth * i) / steps });
+        put(layer);
+        break;
+      }
+      case 'gold': {
+        const g = ctx.createLinearGradient(0, b.y, 0, b.y + b.h);
+        g.addColorStop(0, '#fff6d0');
+        g.addColorStop(0.35, '#f4cf6e');
+        g.addColorStop(0.55, '#b07d2b');
+        g.addColorStop(0.8, '#f2d58a');
+        g.addColorStop(1, '#a8752a');
+        put(silhouette(layer, 'rgba(0,0,0,0.8)', scale), { dy: u * 0.04, glow: 'rgba(0,0,0,0.7)', blur: u * 0.12 });
+        put(silhouette(layer, g, scale));
+        break;
+      }
+      case 'sparkle': {
+        put(layer);
+        // Glitter on the letters
+        const glitter = blankLike(ctx);
+        const gc = glitter.getContext('2d');
+        gc.setTransform(scale, 0, 0, scale, 0, 0);
+        const dot = Math.max(0.7 / scale, Math.min(b.h, b.w) * 0.008);
+        const dots = Math.round(Math.min(2500, (b.w * b.h) / (dot * dot * 30)));
+        for (let i = 0; i < dots; i++) {
+          gc.fillStyle = rgba('#fffbe8', 0.45 + rand() * 0.55);
+          gc.beginPath();
+          gc.arc(b.x + rand() * b.w, b.y + rand() * b.h, dot * (0.6 + rand() * 0.9), 0, Math.PI * 2);
+          gc.fill();
+        }
+        gc.setTransform(1, 0, 0, 1, 0, 0);
+        gc.globalCompositeOperation = 'destination-in';
+        gc.drawImage(layer, 0, 0);
+        put(glitter, { op: 'lighter' });
+        // Small star bursts just outside the corners and edges of the words
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        const stars = 4 + Math.floor(rand() * 3);
+        const unit = Math.min(b.h, b.w * 0.4);
+        for (let i = 0; i < stars; i++) {
+          const side = i % 4;
+          const along = rand();
+          const x = side < 2 ? b.x + along * b.w : (side === 2 ? b.x - unit * 0.05 : b.x + b.w + unit * 0.05);
+          const y = side === 0 ? b.y - unit * 0.04 : side === 1 ? b.y + b.h + unit * 0.04 : b.y + along * b.h;
+          const s = unit * (0.05 + rand() * 0.06);
+          const g = ctx.createRadialGradient(x, y, 0, x, y, s);
+          g.addColorStop(0, rgba(gold, 0.6));
+          g.addColorStop(1, rgba(gold, 0));
+          ctx.fillStyle = g;
+          ctx.beginPath(); ctx.arc(x, y, s, 0, Math.PI * 2); ctx.fill();
+          ctx.fillStyle = rgba('#fff8e1', 0.95);
+          starPath(ctx, x, y, s * 0.9);
+        }
+        ctx.restore();
+        break;
+      }
+      default:
+        put(layer);
+    }
+    return b;
+  }
+
+  // Hand-moved words never leave the picture: shrink them if too big, then nudge them back in.
+  // `paint(ctx, box)` is run on a scratch canvas just to find out where the words would land.
+  let scratchCtx = null;
+  const TEXT_MARGIN = 0.03; // of the image's shorter side
+  function keepInside(box, paint, W, H) {
+    if (!scratchCtx) scratchCtx = document.createElement('canvas').getContext('2d');
+    const measure = (b) => {
+      scratchCtx.setTransform(1, 0, 0, 1, 0, 0);
+      return paint(scratchCtx, b);
+    };
+    let m = measure(box);
+    if (!m) return box;
+    const margin = Math.min(W, H) * TEXT_MARGIN;
+    const k = Math.min(1, (W - margin * 2) / m.w, (H - margin * 2) / m.h);
+    if (k < 1) {
+      box = adjustBox(box, { s: k }, W, H);
+      m = measure(box);
+      if (!m) return box;
+    }
+    let sx = 0, sy = 0;
+    if (m.x < margin) sx = margin - m.x;
+    else if (m.x + m.w > W - margin) sx = W - margin - (m.x + m.w);
+    if (m.y < margin) sy = margin - m.y;
+    else if (m.y + m.h > H - margin) sy = H - margin - (m.y + m.h);
+    return { ...box, x: box.x + sx, y: box.y + sy };
+  }
+
+  // Dashed outlines shown only while editing words in the gallery (never in downloads).
+  function drawTextOutlines(ctx, text, selected, scale) {
+    ctx.save();
+    ctx.lineWidth = 2 / scale;
+    ctx.setLineDash([6 / scale, 4 / scale]);
+    const pad = 4 / scale;
+    for (const [name, b] of Object.entries(text)) {
+      if (!b) continue;
+      ctx.strokeStyle = name === selected ? '#f3d27a' : 'rgba(255,255,255,0.75)';
+      ctx.strokeRect(b.x - pad, b.y - pad, b.w + pad * 2, b.h + pad * 2);
+    }
+    ctx.restore();
   }
 
   // ---------- Main entry ----------
-  // o: { w, h, scale, act, photo, img, logoImg, styleId, info, localized, minimal, seed, adjust }
-  // Returns how the photo was placed (or null), which the gallery uses for dragging.
+  // o: { w, h, scale, act, photo, img, logoImg, styleId, info, localized, minimal, seed,
+  //      adjust (photo crop), textAdjust ({ title, info }: { dx, dy, s }), outlineText (selected block name) }
+  // Returns { photo, text }: how the photo was placed and where each text block landed, for dragging.
   function render(canvas, o) {
     const W = o.w, H = o.h, scale = o.scale || 1;
     canvas.width = Math.max(1, Math.round(W * scale));
@@ -669,6 +877,18 @@ window.AdRender = (() => {
       layer.canvas.width = layer.canvas.height = 0;
     }
 
+    // Hand-moved words: the photo keeps its placement, the shading follows the words.
+    const ta = o.textAdjust || {};
+    if (ta.title || ta.info) {
+      L.titleBox = adjustBox(L.titleBox, ta.title, W, H);
+      L.infoBox = adjustBox(L.infoBox, ta.info, W, H);
+      if (!L.panel) {
+        const boxes = [L.titleBox, L.infoBox].filter(Boolean);
+        L.topShade = boxes.some((b) => b.y + b.h / 2 < H / 2) ? 0.55 : 0;
+        L.bottomShade = boxes.some((b) => b.y + b.h / 2 >= H / 2) ? 0.55 : 0;
+      }
+    }
+
     const rand = rng(hashStr(String(o.seed || 'seed') + styleId));
     if (styleId === 'spotlight') drawSpotlight(ctx, W, H);
     drawShades(ctx, W, H, L);
@@ -678,17 +898,27 @@ window.AdRender = (() => {
       ctx.fillRect(0, 0, W, H * 0.1);
       ctx.fillRect(0, H * 0.9, W, H * 0.1);
     }
-    if (L.titleBox) drawTitle(ctx, L.titleBox, act, o.logoImg);
-    if (L.infoBox) {
-      const cap = shape === 'strip' ? H * 0.42 : Math.min(W, H) * 0.13;
-      drawInfo(ctx, L.infoBox, o.info, act, { minimal: !!o.minimal, cap: o.minimal ? cap * 1.4 : cap });
+    const text = { title: null, info: null };
+    const effectOf = (k) => ta[k] && ta[k].fx;
+    const cap = (shape === 'strip' ? H * 0.42 : Math.min(W, H) * 0.13) * ((ta.info && ta.info.s) || 1);
+    const infoOpts = { minimal: !!o.minimal, cap: o.minimal ? cap * 1.4 : cap };
+    const painters = {
+      title: (c, box) => drawTitle(c, box, act, o.logoImg),
+      info: (c, box) => drawInfo(c, box, o.info, act, infoOpts),
+    };
+    for (const k of ['title', 'info']) {
+      let box = k === 'title' ? L.titleBox : L.infoBox;
+      if (!box) continue;
+      if (ta[k]) box = keepInside(box, painters[k], W, H);
+      text[k] = drawTextBlock(ctx, scale, effectOf(k), (c) => painters[k](c, box), s, rand);
     }
     if (styleId === 'frame') drawFrame(ctx, W, H, s.mainColor || '#d9b45a');
-    return meta;
+    if (o.outlineText) drawTextOutlines(ctx, text, o.outlineText, scale);
+    return { photo: meta, text };
   }
 
   return {
-    STYLES, stylesFor, shapeOf, pxSize, validRows, theatreTotal, distribute, plan,
+    STYLES, TEXT_EFFECTS, TEXT_MARGIN, stylesFor, shapeOf, pxSize, validRows, theatreTotal, distribute, plan,
     formatDates, fmtTime, showInfo, infoPreviewText, render,
   };
 })();
