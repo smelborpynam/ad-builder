@@ -26,7 +26,7 @@ The folder holds `ad-builder-data.json` (all profiles), `photos/` (each photo sa
 4. In the gallery, untick any image you don't want, change the photo or look on any card, then **Download**.
    If a crop looks off, click **✥ Adjust crop** on that image, drag the picture to move it, use **+ / −** to zoom, and click **Done** (**Reset** puts it back). Adjusted images show a dot on the button. To fix every image of a photo at once, edit the act and click where the faces are on that photo instead.
    To fix the words, click **✎ Edit words**. Dashed outlines show the title and the theatre & date; click one to pick it (gold outline), drag it to move it, use **+ / −** to resize it, and choose an **Effect** for just those words (Sparkle, Glow, Gold shine, Outline, Neon, Dark backing, 3D shadow). Words always stay inside the picture. **Reset** puts the picked words back.
-   **⧉ De-group** breaks the picked words into pieces (the title into its lines, e.g. “Christmas”, “with”, “THE RAT PACK”; the theatre & date into “Mendel Center,” and “Dec 6”) so each piece can be moved, resized and given its own effect. Pick any piece and click **⧉ Re-group** to join them back.
+   **⧉ De-group** breaks the picked words apart one step at a time, so each piece can be moved, resized and given its own effect. First it splits them into rows (the title into “Christmas”, “with”, “THE RAT PACK”). Pick a row and De-group again to split it into single words (“THE”, “RAT”, “PACK”). Words that sit on a single line, like “Mendel Center, Dec 6”, go straight to single words. Pieces start where they were, keeping any move, size or effect already given. **⧈ Re-group** goes back one step: a word joins its row again, a row joins the whole block.
 
 ## Animated ads
 

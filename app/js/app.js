@@ -831,7 +831,8 @@
                   <select data-role="text-fx" title="Effect on these words">${R.TEXT_EFFECTS.map((f) => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select>
                   <button class="btn small" data-role="text-smaller" title="Smaller">−</button>
                   <button class="btn small" data-role="text-bigger" title="Bigger">+</button>
-                  <button class="btn small ghost" data-role="text-group" hidden></button>
+                  <button class="btn small ghost" data-role="text-degroup" hidden title="Break these words apart: first into rows, then a row into single words">⧉ De-group</button>
+                  <button class="btn small ghost" data-role="text-regroup" hidden title="Join these back together, one step at a time">⧈ Re-group</button>
                   <button class="btn small ghost" data-role="text-reset" title="Put these words back">Reset</button>
                   <button class="btn small primary" data-role="done">Done</button>
                 </div>
@@ -914,7 +915,8 @@
     const bars = { crop: card.querySelector('[data-bar=crop]'), words: card.querySelector('[data-bar=words]') };
     const fxSelect = bars.words.querySelector('[data-role=text-fx]');
     const selName = bars.words.querySelector('[data-role=sel-name]');
-    const groupBtn = bars.words.querySelector('[data-role=text-group]');
+    const degroupBtn = bars.words.querySelector('[data-role=text-degroup]');
+    const regroupBtn = bars.words.querySelector('[data-role=text-regroup]');
     let mode = null;
     let drag = null;
     let pending = false, dirty = false;
@@ -934,8 +936,8 @@
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
     // ----- words helpers -----
-    // it.text holds one entry per block ("title", "info") or de-grouped piece ("title.0", "info.1"),
-    // plus split: { title: true } for blocks that are de-grouped.
+    // it.text holds one entry per block ("title"), de-grouped row ("title.0") or word ("title.0.1"),
+    // plus split: { title: true, "title.0": true } for whatever is de-grouped.
     const blocks = () => (canvas._meta && canvas._meta.text) || {};
     const textOf = (k) => (it.text && it.text[k]) || {};
     const tidy = (all) => {
@@ -949,26 +951,33 @@
       if (!Object.keys(next).length) delete all[k];
       tidy(all);
     };
-    const blockOf = (k) => k.split('.')[0];
     const isPiece = (k) => k.includes('.');
+    // "title.0.1" → ["title.0.1", "title.0", "title"]: a piece, then what it sits in.
+    const lineage = (k) => k.split('.').map((_, i, all) => all.slice(0, all.length - i).join('.'));
     const select = (k) => {
       const meta = canvas._meta || {};
       card._outline = k;
       card._lastBlock = k;
       selName.textContent = (meta.labels && meta.labels[k]) || '';
-      fxSelect.value = textOf(k).fx || (isPiece(k) && textOf(blockOf(k)).fx) || 'none';
-      // De-group a block made of several pieces; re-group from any of its pieces.
-      const pieces = (meta.partCount && meta.partCount[blockOf(k)]) || 0;
-      groupBtn.hidden = !isPiece(k) && pieces < 2;
-      groupBtn.textContent = isPiece(k) ? '⧉ Re-group' : '⧉ De-group';
-      groupBtn.title = isPiece(k) ? 'Join these pieces back together' : 'Break these words apart to move each piece on its own';
+      // Show the effect actually in use: its own, else the row's, else the block's.
+      const own = lineage(k).map((x) => textOf(x).fx).find(Boolean);
+      fxSelect.value = own || 'none';
+      degroupBtn.hidden = !(meta.splittable && meta.splittable[k]);
+      regroupBtn.hidden = !(meta.parent && meta.parent[k]);
     };
-    const setSplit = (block, on) => {
+    // De-group keeps the piece's own move/size/effect, so its rows or words start where it was.
+    const degroup = (k) => {
+      const all = { ...(it.text || {}) };
+      all.split = { ...(all.split || {}), [k]: true };
+      tidy(all);
+    };
+    // Re-group `into` (a block or row): forget how everything inside it was split and edited.
+    const regroup = (into) => {
       const all = { ...(it.text || {}) };
       const split = { ...(all.split || {}) };
-      // Drop the pieces' own edits either way, so de-grouping starts from the current look.
-      Object.keys(all).forEach((key) => { if (key.startsWith(`${block}.`)) delete all[key]; });
-      if (on) split[block] = true; else delete split[block];
+      const inside = (key) => key.startsWith(`${into}.`);
+      Object.keys(all).forEach((key) => { if (inside(key)) delete all[key]; });
+      Object.keys(split).forEach((key) => { if (key === into || inside(key)) delete split[key]; });
       all.split = split;
       tidy(all);
     };
@@ -1004,7 +1013,7 @@
     wordsBtn.addEventListener('click', () => setMode('words'));
     fxSelect.addEventListener('change', () => {
       const k = card._outline;
-      // A piece keeps an explicit "none" so it can opt out of its block's effect.
+      // A row or word keeps an explicit "none" so it can opt out of the effect above it.
       setText(k, { fx: fxSelect.value === 'none' && !isPiece(k) ? undefined : fxSelect.value });
       changed();
     });
@@ -1026,13 +1035,17 @@
         }
       } else {
         const k = card._outline;
-        if (role === 'text-group') {
-          const block = blockOf(k);
-          setSplit(block, !isPiece(k));
-          // After drawing, pick the first piece (de-grouped) or the whole block (re-grouped).
-          card._lastBlock = isPiece(k) ? block : `${block}.0`;
+        if (role === 'text-degroup' || role === 'text-regroup') {
+          const meta = canvas._meta || {};
+          const into = role === 'text-regroup' && meta.parent && meta.parent[k];
+          if (into) regroup(into); else degroup(k);
           saveOverride(show, it);
-          renderCard(card, it, show, act, th).then(() => select(card._lastBlock)).then(redraw);
+          // After drawing, pick the first new piece (de-grouped) or what it joined back into (re-grouped).
+          renderCard(card, it, show, act, th).then(() => {
+            const keys = Object.keys(blocks());
+            select(into || keys.find((x) => x.startsWith(`${k}.`)) || keys[0]);
+            redraw();
+          });
           return;
         }
         if (role === 'text-reset') { setText(k, { dx: undefined, dy: undefined, s: undefined, fx: undefined }); select(k); changed(); }

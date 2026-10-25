@@ -541,18 +541,36 @@ window.AdRender = (() => {
   }
 
   // ---------- Text ----------
-  // Text is laid out first as "parts" (one per title line, one per theatre/date segment), then painted.
-  // Grouped, all parts of a block are painted together; de-grouped, each part moves on its own.
-  // Each part: { text, size, cx, cy, w, h, bounds, paint(ctx) } — paint draws it centred at (0, 0).
+  // Text is laid out first as rows (title lines, theatre/date lines), each made of words, then painted.
+  // Grouped, a block's rows are painted together. De-grouped, each row moves on its own, and a
+  // de-grouped row lets each of its words move on its own.
+  // A row or word: { text, size, cx, cy, w, h, bounds, paint(ctx) } — paint draws it centred at (0, 0).
+  // A row also has words: [...] (empty when it can't be split, e.g. a logo or a single word).
+
+  const piece = (text, size, cx, cy, w, h, paint) => ({ text, size, cx, cy, w, h, bounds: { x: cx - w / 2, y: cy - h / 2, w, h }, paint });
+
+  // Splits `text` (already measured as `tw` wide, centred on cx) into word pieces painted with `paintText`.
+  function wordsOf(ctx, text, tw, cx, cy, h, size, paintText) {
+    const list = text.split(/\s+/).filter(Boolean);
+    if (list.length < 2) return [];
+    const k = tw / ctx.measureText(text).width;
+    const space = ctx.measureText(' ').width * k;
+    let x = cx - tw / 2;
+    return list.map((word) => {
+      const w = ctx.measureText(word).width * k;
+      const p = piece(word, size, x + w / 2, cy, w, h, (c) => paintText(c, word));
+      x += w + space;
+      return p;
+    });
+  }
 
   function layoutTitle(ctx, box, act, logoImg) {
     if (logoImg) {
       const fit = containFit(logoImg.naturalWidth || logoImg.width, logoImg.naturalHeight || logoImg.height, box);
-      const part = {
-        text: 'Logo', cx: fit.x + fit.w / 2, cy: fit.y + fit.h / 2, w: fit.w, h: fit.h, bounds: fit,
-        paint: (c) => { shadowFor(c, fit.h * 0.25); c.drawImage(logoImg, -fit.w / 2, -fit.h / 2, fit.w, fit.h); },
-      };
-      return { parts: [part], bounds: fit };
+      const row = piece('Logo', fit.h, fit.x + fit.w / 2, fit.y + fit.h / 2, fit.w, fit.h,
+        (c) => { shadowFor(c, fit.h * 0.25); c.drawImage(logoImg, -fit.w / 2, -fit.h / 2, fit.w, fit.h); });
+      row.words = [];
+      return { rows: [row], bounds: fit };
     }
     const t = act.title || {}, s = act.style;
     const hasPre = !!(t.pre && t.pre.trim());
@@ -582,48 +600,54 @@ window.AdRender = (() => {
     const cx = box.x + box.w / 2;
     let y = box.y + (box.h - blockH * k) / 2;
     const bounds = { x: cx - bw / 2, y, w: bw, h: blockH * k };
-    const parts = lines.map((l) => {
+    const rows = lines.map((l) => {
       const size = l.ratio * S;
       const lineH = size * l.lh;
       const cy = y + lineH / 2;
       y += lineH;
       const tw = l.w100 * k;
       const w = l.flank ? bw : tw;
-      return {
-        text: l.text, size, cx, cy, w, h: lineH, bounds: { x: cx - w / 2, y: cy - lineH / 2, w, h: lineH },
-        paint: (c) => {
-          c.textAlign = 'center';
-          c.textBaseline = 'middle';
-          c.font = font(l.family, size);
-          setSpacing(c, l.ls * size);
-          shadowFor(c, size);
-          c.fillStyle = l.color;
-          c.fillText(l.text, HAS_LETTER_SPACING ? (l.ls * size) / 2 : 0, 0);
-          setSpacing(c, 0);
-          if (l.flank) {
-            const gap = size * 0.6;
-            c.strokeStyle = l.color;
-            c.lineWidth = Math.max(1, size * 0.07);
-            c.beginPath();
-            c.moveTo(-w / 2, 0); c.lineTo(-tw / 2 - gap, 0);
-            c.moveTo(tw / 2 + gap, 0); c.lineTo(w / 2, 0);
-            c.stroke();
-          }
-        },
+      const paintText = (c, text) => {
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.font = font(l.family, size);
+        setSpacing(c, l.ls * size);
+        shadowFor(c, size);
+        c.fillStyle = l.color;
+        c.fillText(text, HAS_LETTER_SPACING ? (l.ls * size) / 2 : 0, 0);
+        setSpacing(c, 0);
       };
+      const row = piece(l.text, size, cx, cy, w, lineH, (c) => {
+        paintText(c, l.text);
+        if (l.flank) {
+          const gap = size * 0.6;
+          c.strokeStyle = l.color;
+          c.lineWidth = Math.max(1, size * 0.07);
+          c.beginPath();
+          c.moveTo(-w / 2, 0); c.lineTo(-tw / 2 - gap, 0);
+          c.moveTo(tw / 2 + gap, 0); c.lineTo(w / 2, 0);
+          c.stroke();
+        }
+      });
+      // Words of a split row drop the side rules that frame lines like "— with —".
+      ctx.save();
+      ctx.font = font(l.family, size);
+      setSpacing(ctx, l.ls * size);
+      row.words = wordsOf(ctx, l.text, tw, cx, cy, lineH, size, paintText);
+      ctx.restore();
+      return row;
     });
-    return { parts, bounds };
+    return { rows, bounds };
   }
 
-  // Theatre & date. Each line is made of segments: "Mendel Center," and "Dec 6" stay separate
-  // pieces even when shown on one line, so they can be de-grouped.
+  // Theatre & date: one row per line ("Mendel Center, Dec 6", or "Mendel Center" / "Dec 6"), plus the extra line.
   function layoutInfo(ctx, box, info, act, opts) {
     let candidates;
-    if (info.custom) candidates = [info.custom.split(/\s*[|\n]\s*/).filter(Boolean).map((l) => [l])];
-    else if (opts.minimal) candidates = [[[info.dates || info.venue]]];
-    else if (info.venue && info.dates) candidates = [[[`${info.venue},`, info.dates]], [[info.venue], [info.dates]]];
-    else candidates = [[[info.venue || info.dates]]];
-    candidates = candidates.map((c) => c.map((segs) => segs.filter(Boolean)).filter((segs) => segs.length)).filter((c) => c.length);
+    if (info.custom) candidates = [info.custom.split(/\s*[|\n]\s*/)];
+    else if (opts.minimal) candidates = [[info.dates || info.venue]];
+    else if (info.venue && info.dates) candidates = [[`${info.venue}, ${info.dates}`], [info.venue, info.dates]];
+    else candidates = [[info.venue || info.dates]];
+    candidates = candidates.map((c) => c.filter(Boolean)).filter((c) => c.length);
     if (!candidates.length) return null;
 
     const fam = act.style.infoFont;
@@ -632,9 +656,7 @@ window.AdRender = (() => {
     const extraRatio = 0.45;
     ctx.save();
     ctx.font = font(fam, 100);
-    const space100 = ctx.measureText(' ').width;
-    const segW100 = (seg) => ctx.measureText(seg).width;
-    const lineW100 = (segs) => segs.reduce((n, sg) => n + segW100(sg), 0) + space100 * (segs.length - 1);
+    const lineW100 = (line) => ctx.measureText(line).width;
     let best = null;
     for (const lines of candidates) {
       ctx.font = font(fam, 100);
@@ -650,42 +672,39 @@ window.AdRender = (() => {
       if (!best || score > best.score) best = { lines, size, score, totalH: (totalH / 100) * size, w: (maxW / 100) * size };
     }
     const { lines, size } = best;
-    const k = size / 100;
-    ctx.font = font(fam, 100);
     let y = box.y + (box.h - best.totalH) / 2;
     const cx = box.x + box.w / 2;
     const bounds = { x: cx - best.w / 2, y, w: best.w, h: best.totalH };
 
-    const makePart = (text, sz, pcx, cy, w, lineH) => ({
-      text, size: sz, cx: pcx, cy, w, h: lineH, bounds: { x: pcx - w / 2, y: cy - lineH / 2, w, h: lineH },
-      paint: (c) => {
-        c.textAlign = 'center';
-        c.textBaseline = 'middle';
-        c.font = font(fam, sz);
-        shadowFor(c, sz);
-        c.fillStyle = act.style.infoGold ? goldGradient(c, -sz * 0.45, sz * 0.45) : act.style.infoColor;
-        c.fillText(text, 0, 0);
-      },
-    });
-    const parts = [];
-    for (const segs of lines) {
+    const paintText = (sz) => (c, text) => {
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.font = font(fam, sz);
+      shadowFor(c, sz);
+      c.fillStyle = act.style.infoGold ? goldGradient(c, -sz * 0.45, sz * 0.45) : act.style.infoColor;
+      c.fillText(text, 0, 0);
+    };
+    const makeRow = (text, sz, cy, lineH) => {
+      ctx.font = font(fam, 100);
+      const w = (lineW100(text) / 100) * sz;
+      const paint = paintText(sz);
+      const row = piece(text, sz, cx, cy, w, lineH, (c) => paint(c, text));
+      ctx.font = font(fam, sz);
+      row.words = wordsOf(ctx, text, w, cx, cy, lineH, sz, paint);
+      return row;
+    };
+    const rows = [];
+    for (const line of lines) {
       const lineH = size * lh;
-      const cy = y + lineH / 2;
-      let x = cx - (lineW100(segs) * k) / 2;
-      for (const sg of segs) {
-        const w = segW100(sg) * k;
-        parts.push(makePart(sg, size, x + w / 2, cy, w, lineH));
-        x += w + space100 * k;
-      }
+      rows.push(makeRow(line, size, y + lineH / 2, lineH));
       y += lineH;
     }
     if (extra) {
       const sz = size * extraRatio, lineH = sz * 1.35;
-      ctx.font = font(fam, 100);
-      parts.push(makePart(extra, sz, cx, y + lineH / 2, (ctx.measureText(extra).width / 100) * sz, lineH));
+      rows.push(makeRow(extra, sz, y + lineH / 2, lineH));
     }
     ctx.restore();
-    return { parts, bounds };
+    return { rows, bounds };
   }
 
   // Paints one part at its spot, shifted by (dx, dy) image units and scaled by s around its centre.
@@ -987,9 +1006,9 @@ window.AdRender = (() => {
       top.fillRect(0, 0, W, H * 0.1);
       top.fillRect(0, H * 0.9, W, H * 0.1);
     }
-    // text: where each block or de-grouped piece landed; labels: what to call it; parts: how many pieces.
-    const text = {}, labels = {}, partCount = {};
-    const effectOf = (k) => ta[k] && ta[k].fx;
+    // text: where each block, row or word landed (keys "title", "title.0", "title.0.1");
+    // labels: what to call it; splittable: whether it can be de-grouped; parent: what Re-group joins it back into.
+    const text = {}, labels = {}, splittable = {}, parent = {};
     const split = ta.split || {};
     const cap = (shape === 'strip' ? H * 0.42 : Math.min(W, H) * 0.13) * ((ta.info && ta.info.s) || 1);
     const infoOpts = { minimal: !!o.minimal, cap: o.minimal ? cap * 1.4 : cap };
@@ -998,34 +1017,66 @@ window.AdRender = (() => {
       info: (box) => layoutInfo(ctx, box, o.info, act, infoOpts),
     };
     const BLOCK_NAMES = { title: 'Title', info: 'Theatre & date' };
+    const blockList = anim && anim.blocks;
+
+    // Draws piece p moved by the parent's placement `from` ({ dx, dy, s, about }) and then by its own edit `a`.
+    // Returns its own placement, which its words start from when it's de-grouped.
+    const placePiece = (key, p, from, a, effect) => {
+      const sp = from.s;
+      const s1 = sp * (a.s || 1);
+      // Where the parent's move/scale puts this piece's centre, then its own move on top.
+      let cx = from.about.x + from.dx + (p.cx - from.about.x) * sp + (a.dx || 0) * W;
+      let cy = from.about.y + from.dy + (p.cy - from.about.y) * sp + (a.dy || 0) * H;
+      const fit = fitInside({ x: cx - (p.w * s1) / 2, y: cy - (p.h * s1) / 2, w: p.w * s1, h: p.h * s1 }, W, H);
+      cx += fit.sx; cy += fit.sy;
+      const sc = s1 * fit.k;
+      if (effect !== undefined) {
+        text[key] = drawTextBlock(top, scale, effect, (c) => paintPart(c, p, cx - p.cx, cy - p.cy, sc), s, rand, blockList);
+        labels[key] = `“${p.text}”`;
+      }
+      return { dx: cx - p.cx, dy: cy - p.cy, s: sc, about: { x: p.cx, y: p.cy } };
+    };
+    // A piece's effect, falling back to the row's, then the block's. An explicit "none" stops the fallback.
+    const effectFor = (...keys) => {
+      for (const k of keys) if (ta[k] && ta[k].fx) return ta[k].fx;
+      return 'none';
+    };
+
     for (const k of ['title', 'info']) {
       let box = k === 'title' ? L.titleBox : L.infoBox;
       if (!box) continue;
       if (ta[k]) box = keepInside(box, (b) => { const l = layouts[k](b); return l && l.bounds; }, W, H);
       const lay = layouts[k](box);
       if (!lay) continue;
-      partCount[k] = lay.parts.length;
-      if (!split[k] || lay.parts.length < 2) {
-        text[k] = drawTextBlock(top, scale, effectOf(k), (c) => { lay.parts.forEach((p) => paintPart(c, p)); return lay.bounds; }, s, rand, anim && anim.blocks);
+      const rows = lay.rows;
+      splittable[k] = rows.length > 1 || rows[0].words.length > 1;
+      if (!split[k] || !splittable[k]) {
+        text[k] = drawTextBlock(top, scale, effectFor(k), (c) => { rows.forEach((r) => paintPart(c, r)); return lay.bounds; }, s, rand, blockList);
         labels[k] = BLOCK_NAMES[k];
         continue;
       }
-      // De-grouped: every piece has its own move, size and effect (falling back to the block's effect).
-      lay.parts.forEach((p, i) => {
-        const key = `${k}.${i}`;
-        const a = ta[key] || {};
-        const sc = a.s || 1;
-        let dx = (a.dx || 0) * W, dy = (a.dy || 0) * H;
-        const w = p.w * sc, h = p.h * sc;
-        const fit = fitInside({ x: p.cx + dx - w / 2, y: p.cy + dy - h / 2, w, h }, W, H);
-        dx += fit.sx; dy += fit.sy;
-        text[key] = drawTextBlock(top, scale, a.fx || effectOf(k), (c) => paintPart(c, p, dx, dy, sc * fit.k), s, rand, anim && anim.blocks);
-        labels[key] = `“${p.text}”`;
+      // De-grouped: rows first. A block of one row goes straight to its words.
+      const oneRow = rows.length === 1;
+      rows.forEach((row, i) => {
+        const rowKey = `${k}.${i}`;
+        const rowSplit = (oneRow || split[rowKey]) && row.words.length > 1;
+        const none = { dx: 0, dy: 0, s: 1, about: { x: row.cx, y: row.cy } };
+        const placed = placePiece(rowKey, row, none, ta[rowKey] || {}, rowSplit ? undefined : effectFor(rowKey, k));
+        if (!rowSplit) {
+          splittable[rowKey] = row.words.length > 1;
+          parent[rowKey] = k;
+          return;
+        }
+        row.words.forEach((word, j) => {
+          const wordKey = `${rowKey}.${j}`;
+          placePiece(wordKey, word, placed, ta[wordKey] || {}, effectFor(wordKey, rowKey, k));
+          parent[wordKey] = oneRow ? k : rowKey;
+        });
       });
     }
     if (styleId === 'frame') drawFrame(top, W, H, s.mainColor || '#d9b45a');
     if (o.outlineText) drawTextOutlines(ctx, text, o.outlineText, scale);
-    return { photo: meta, text, labels, partCount, anim };
+    return { photo: meta, text, labels, splittable, parent, anim };
   }
 
   // ---------- Animation ----------
