@@ -459,7 +459,40 @@ window.AdRender = (() => {
     ctx.fill();
   }
 
-  function drawSparkles(ctx, W, H, rand, color) {
+  // One sparkle: a soft glow, a tiny dot or a four-point star (glow g × its size, glow opacity a,
+  // star opacity sa).
+  // `k` (0–1) dims and shrinks it; `angle` turns the star.
+  function drawSparkle(ctx, p, color, k = 1, angle = 0) {
+    if (k <= 0.01) return;
+    if (p.kind === 'soft') {
+      const r = p.r * (0.6 + 0.4 * k);
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+      g.addColorStop(0, rgba(color, p.a * k));
+      g.addColorStop(1, rgba(color, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.fill();
+    } else if (p.kind === 'dot') {
+      ctx.fillStyle = rgba(p.c || '#fff4cf', p.a * k);
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    } else {
+      const s = p.s * k, gr = s * (p.g || 0.9);
+      const g = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, gr);
+      g.addColorStop(0, rgba(color, (p.a ?? 0.55) * k));
+      g.addColorStop(1, rgba(color, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(p.x, p.y, gr, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = rgba('#fff8e1', (p.sa || 0.9) * Math.min(1, k * 1.2));
+      if (!angle) { starPath(ctx, p.x, p.y, s); return; }
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(angle);
+      starPath(ctx, 0, 0, s);
+      ctx.restore();
+    }
+  }
+
+  // With `rec` (animating), the sparkles are listed there instead of drawn, so they can twinkle.
+  function drawSparkles(ctx, W, H, rand, color, rec) {
     const m = Math.min(W, H);
     const n = Math.round(Math.min(170, 30 + (W * H) / 12000));
     ctx.save();
@@ -471,26 +504,17 @@ window.AdRender = (() => {
       // Keep the bigger sparkles toward the edges and top, away from faces.
       const dx = (x - W / 2) / (W / 2), dy = (y - H * 0.45) / (H / 2);
       const central = dx * dx + dy * dy < 0.55;
+      let p = null;
       if (t < 0.55 || (central && t >= 0.85)) {
         const r = m * (0.004 + rand() * 0.02);
-        const g = ctx.createRadialGradient(x, y, 0, x, y, r);
-        g.addColorStop(0, rgba(color, 0.15 + rand() * 0.45));
-        g.addColorStop(1, rgba(color, 0));
-        ctx.fillStyle = g;
-        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+        p = { kind: 'soft', x, y, r, a: 0.15 + rand() * 0.45 };
       } else if (t < 0.85) {
-        ctx.fillStyle = rgba('#fff4cf', 0.4 + rand() * 0.5);
-        ctx.beginPath(); ctx.arc(x, y, Math.max(0.5, m * 0.0022), 0, Math.PI * 2); ctx.fill();
+        p = { kind: 'dot', x, y, r: Math.max(0.5, m * 0.0022), a: 0.4 + rand() * 0.5 };
       } else if (t >= 0.93) {
-        const s = m * (0.012 + rand() * 0.02);
-        const g = ctx.createRadialGradient(x, y, 0, x, y, s * 0.9);
-        g.addColorStop(0, rgba(color, 0.55));
-        g.addColorStop(1, rgba(color, 0));
-        ctx.fillStyle = g;
-        ctx.beginPath(); ctx.arc(x, y, s * 0.9, 0, Math.PI * 2); ctx.fill();
-        ctx.fillStyle = rgba('#fff8e1', 0.9);
-        starPath(ctx, x, y, s);
+        p = { kind: 'star', x, y, s: m * (0.012 + rand() * 0.02) };
       }
+      if (!p) continue;
+      if (rec) rec.push(p); else drawSparkle(ctx, p, color);
     }
     ctx.restore();
   }
@@ -714,9 +738,21 @@ window.AdRender = (() => {
     return c;
   }
 
+  // Copy of the letters around `b` (image units), kept so animations can light up just the words.
+  function letterMask(layer, b, pad, scale) {
+    const x0 = Math.max(0, Math.floor((b.x - pad) * scale)), y0 = Math.max(0, Math.floor((b.y - pad) * scale));
+    const x1 = Math.min(layer.width, Math.ceil((b.x + b.w + pad) * scale)), y1 = Math.min(layer.height, Math.ceil((b.y + b.h + pad) * scale));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, x1 - x0);
+    c.height = Math.max(1, y1 - y0);
+    c.getContext('2d').drawImage(layer, -x0, -y0);
+    return { canvas: c, x: x0 / scale, y: y0 / scale, w: c.width / scale, h: c.height / scale };
+  }
+
   // Draws one text block through `paint(ctx)` (which returns its bounds) with an optional effect.
-  function drawTextBlock(ctx, scale, effect, paint, style, rand) {
-    if (!effect || effect === 'none') return paint(ctx);
+  // With `rec` (animating), the block's letters and any glitter/stars are listed there to animate.
+  function drawTextBlock(ctx, scale, effect, paint, style, rand, rec) {
+    if (!rec && (!effect || effect === 'none')) return paint(ctx);
     const layer = blankLike(ctx);
     const lc = layer.getContext('2d');
     lc.setTransform(scale, 0, 0, scale, 0, 0);
@@ -725,6 +761,8 @@ window.AdRender = (() => {
     if (!b) return null;
 
     const u = Math.max(4, Math.min(b.h, b.w * 0.5)); // effect size, in image units
+    const block = rec ? { b, u, mask: letterMask(layer, b, u * 0.3, scale), glitter: null, stars: null } : null;
+    if (block) rec.push(block);
     const put = (src, opts = {}) => {
       ctx.save();
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -793,40 +831,37 @@ window.AdRender = (() => {
       case 'sparkle': {
         put(layer);
         // Glitter on the letters
-        const glitter = blankLike(ctx);
-        const gc = glitter.getContext('2d');
-        gc.setTransform(scale, 0, 0, scale, 0, 0);
         const dot = Math.max(0.7 / scale, Math.min(b.h, b.w) * 0.008);
         const dots = Math.round(Math.min(2500, (b.w * b.h) / (dot * dot * 30)));
+        const list = [];
         for (let i = 0; i < dots; i++) {
-          gc.fillStyle = rgba('#fffbe8', 0.45 + rand() * 0.55);
-          gc.beginPath();
-          gc.arc(b.x + rand() * b.w, b.y + rand() * b.h, dot * (0.6 + rand() * 0.9), 0, Math.PI * 2);
-          gc.fill();
+          const a = 0.45 + rand() * 0.55;
+          list.push({ kind: 'dot', c: '#fffbe8', a, x: b.x + rand() * b.w, y: b.y + rand() * b.h, r: dot * (0.6 + rand() * 0.9) });
         }
-        gc.setTransform(1, 0, 0, 1, 0, 0);
-        gc.globalCompositeOperation = 'destination-in';
-        gc.drawImage(layer, 0, 0);
-        put(glitter, { op: 'lighter' });
         // Small star bursts just outside the corners and edges of the words
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        const stars = 4 + Math.floor(rand() * 3);
+        const stars = [];
+        const count = 4 + Math.floor(rand() * 3);
         const unit = Math.min(b.h, b.w * 0.4);
-        for (let i = 0; i < stars; i++) {
+        for (let i = 0; i < count; i++) {
           const side = i % 4;
           const along = rand();
           const x = side < 2 ? b.x + along * b.w : (side === 2 ? b.x - unit * 0.05 : b.x + b.w + unit * 0.05);
           const y = side === 0 ? b.y - unit * 0.04 : side === 1 ? b.y + b.h + unit * 0.04 : b.y + along * b.h;
           const s = unit * (0.05 + rand() * 0.06);
-          const g = ctx.createRadialGradient(x, y, 0, x, y, s);
-          g.addColorStop(0, rgba(gold, 0.6));
-          g.addColorStop(1, rgba(gold, 0));
-          ctx.fillStyle = g;
-          ctx.beginPath(); ctx.arc(x, y, s, 0, Math.PI * 2); ctx.fill();
-          ctx.fillStyle = rgba('#fff8e1', 0.95);
-          starPath(ctx, x, y, s * 0.9);
+          stars.push({ kind: 'star', x, y, s: s * 0.9, g: 1 / 0.9, a: 0.6, sa: 0.95 });
         }
+        if (block) { block.glitter = list; block.stars = stars; break; }
+        const glitter = blankLike(ctx);
+        const gc = glitter.getContext('2d');
+        gc.setTransform(scale, 0, 0, scale, 0, 0);
+        for (const p of list) drawSparkle(gc, p);
+        gc.setTransform(1, 0, 0, 1, 0, 0);
+        gc.globalCompositeOperation = 'destination-in';
+        gc.drawImage(layer, 0, 0);
+        put(glitter, { op: 'lighter' });
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (const p of stars) drawSparkle(ctx, p, gold);
         ctx.restore();
         break;
       }
@@ -883,7 +918,8 @@ window.AdRender = (() => {
 
   // ---------- Main entry ----------
   // o: { w, h, scale, act, photo, img, logoImg, styleId, info, localized, minimal, seed,
-  //      adjust (photo crop), textAdjust ({ title, info }: { dx, dy, s }), outlineText (selected block name) }
+  //      adjust (photo crop), textAdjust ({ title, info }: { dx, dy, s }), outlineText (selected block name),
+  //      animate (used by animate() below) }
   // Returns { photo, text }: how the photo was placed and where each text block landed, for dragging.
   function render(canvas, o) {
     const W = o.w, H = o.h, scale = o.scale || 1;
@@ -940,11 +976,16 @@ window.AdRender = (() => {
     const rand = rng(hashStr(String(o.seed || 'seed') + styleId));
     if (styleId === 'spotlight') drawSpotlight(ctx, W, H);
     drawShades(ctx, W, H, L);
-    if (styleId === 'sparkle') drawSparkles(ctx, W, H, rand, s.mainColor || '#d9b45a');
+    // Animating: `canvas` keeps everything under the sparkles; the words and what sits on them
+    // go on their own layer (`top`), and the sparkles and words' glitter are listed to animate.
+    const anim = o.animate ? { sparkles: [], blocks: [], over: blankLike(ctx) } : null;
+    const top = anim ? anim.over.getContext('2d') : ctx;
+    if (anim) { top.setTransform(scale, 0, 0, scale, 0, 0); top.imageSmoothingQuality = 'high'; }
+    if (styleId === 'sparkle') drawSparkles(ctx, W, H, rand, s.mainColor || '#d9b45a', anim && anim.sparkles);
     if (styleId === 'cinema') {
-      ctx.fillStyle = '#000';
-      ctx.fillRect(0, 0, W, H * 0.1);
-      ctx.fillRect(0, H * 0.9, W, H * 0.1);
+      top.fillStyle = '#000';
+      top.fillRect(0, 0, W, H * 0.1);
+      top.fillRect(0, H * 0.9, W, H * 0.1);
     }
     // text: where each block or de-grouped piece landed; labels: what to call it; parts: how many pieces.
     const text = {}, labels = {}, partCount = {};
@@ -965,7 +1006,7 @@ window.AdRender = (() => {
       if (!lay) continue;
       partCount[k] = lay.parts.length;
       if (!split[k] || lay.parts.length < 2) {
-        text[k] = drawTextBlock(ctx, scale, effectOf(k), (c) => { lay.parts.forEach((p) => paintPart(c, p)); return lay.bounds; }, s, rand);
+        text[k] = drawTextBlock(top, scale, effectOf(k), (c) => { lay.parts.forEach((p) => paintPart(c, p)); return lay.bounds; }, s, rand, anim && anim.blocks);
         labels[k] = BLOCK_NAMES[k];
         continue;
       }
@@ -978,17 +1019,186 @@ window.AdRender = (() => {
         const w = p.w * sc, h = p.h * sc;
         const fit = fitInside({ x: p.cx + dx - w / 2, y: p.cy + dy - h / 2, w, h }, W, H);
         dx += fit.sx; dy += fit.sy;
-        text[key] = drawTextBlock(ctx, scale, a.fx || effectOf(k), (c) => paintPart(c, p, dx, dy, sc * fit.k), s, rand);
+        text[key] = drawTextBlock(top, scale, a.fx || effectOf(k), (c) => paintPart(c, p, dx, dy, sc * fit.k), s, rand, anim && anim.blocks);
         labels[key] = `“${p.text}”`;
       });
     }
-    if (styleId === 'frame') drawFrame(ctx, W, H, s.mainColor || '#d9b45a');
+    if (styleId === 'frame') drawFrame(top, W, H, s.mainColor || '#d9b45a');
     if (o.outlineText) drawTextOutlines(ctx, text, o.outlineText, scale);
-    return { photo: meta, text, labels, partCount };
+    return { photo: meta, text, labels, partCount, anim };
+  }
+
+  // ---------- Animation ----------
+  // Every animation is one seamless loop. Sparkles already in the picture (Gold sparkle look,
+  // Sparkle effect on words) always twinkle; these add more on top.
+  const ANIMATIONS = [
+    { id: 'both', name: 'Glisten & twinkle', shine: true, pops: true },
+    { id: 'shine', name: 'Words glisten', shine: true },
+    { id: 'pops', name: 'Twinkling stars', pops: true },
+    { id: 'float', name: 'Floating sparkles', shine: true, float: true },
+  ];
+  const ANIM_PERIOD = 3.2; // seconds per loop
+  const TAU = Math.PI * 2;
+  const smooth = (x) => x * x * (3 - 2 * x);
+
+  // Stars that pop up one after another on the letters of a block.
+  function popsOn(bl, rand, m) {
+    const mk = bl.mask, b = bl.b;
+    const data = mk.canvas.getContext('2d').getImageData(0, 0, mk.canvas.width, mk.canvas.height).data;
+    const count = Math.max(2, Math.min(7, Math.round(2 + (b.w / Math.max(1, b.h)) * 0.5)));
+    const pops = [];
+    for (let tries = 0; pops.length < count && tries < 400; tries++) {
+      const x = b.x + rand() * b.w, y = b.y + rand() * b.h;
+      const ix = Math.floor(((x - mk.x) / mk.w) * mk.canvas.width), iy = Math.floor(((y - mk.y) / mk.h) * mk.canvas.height);
+      if (data[(iy * mk.canvas.width + ix) * 4 + 3] < 140) continue;
+      const s = Math.max(Math.min(b.h, b.w) * (0.06 + rand() * 0.06), m * (0.012 + rand() * 0.008));
+      pops.push({ kind: 'star', x, y, s, g: 1.7, a: 0.7, o: (pops.length + rand() * 0.6) / count, n: 1 });
+    }
+    return pops;
+  }
+
+  // Lays out the image once, then `frame(ctx, t)` draws it at t seconds into the loop, sized
+  // to ctx's canvas. o is the same as for render().
+  function animate(o, animId) {
+    const A = ANIMATIONS.find((a) => a.id === animId) || ANIMATIONS[0];
+    const W = o.w, H = o.h, m = Math.min(W, H);
+    const under = document.createElement('canvas');
+    const { sparkles, blocks, over } = render(under, { ...o, outlineText: undefined, animate: true }).anim;
+    const color = o.act.style.mainColor || '#d9b45a';
+    const rand = rng(hashStr(`${o.seed || 'seed'}:animate`));
+
+    // Each sparkle twinkles once or twice a loop at its own moment and sways a little.
+    const life = (p) => { p.o = rand(); p.n = rand() < 0.6 ? 1 : 2; p.sway = m * (0.003 + rand() * 0.007); };
+    sparkles.forEach(life);
+    for (const bl of blocks) {
+      (bl.glitter || []).forEach(life);
+      (bl.stars || []).forEach(life);
+      bl.pops = A.pops ? popsOn(bl, rand, m) : [];
+      bl.scratch = document.createElement('canvas');
+      bl.scratch.width = bl.mask.canvas.width;
+      bl.scratch.height = bl.mask.canvas.height;
+    }
+    const floaters = [];
+    if (A.float) {
+      const n = Math.round(Math.min(120, 20 + (W * H) / 16000));
+      for (let i = 0; i < n; i++) {
+        floaters.push({
+          x: rand() * W, y0: H * (0.1 + rand() * 1.05), d: H * (0.2 + rand() * 0.25),
+          r: m * (0.006 + rand() * 0.012), a: 0.35 + rand() * 0.5, o: rand(), star: rand() < 0.18,
+        });
+      }
+    }
+
+    // Draws `paint` (in image units) onto the block's letters only, then adds it with a soft glow.
+    function onLetters(ctx, bl, k, paint) {
+      const sc = bl.scratch, mk = bl.mask, g = sc.getContext('2d');
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.globalCompositeOperation = 'source-over';
+      g.clearRect(0, 0, sc.width, sc.height);
+      const sx = sc.width / mk.w, sy = sc.height / mk.h;
+      g.setTransform(sx, 0, 0, sy, -mk.x * sx, -mk.y * sy);
+      paint(g);
+      g.setTransform(1, 0, 0, 1, 0, 0);
+      g.globalCompositeOperation = 'destination-in';
+      g.drawImage(mk.canvas, 0, 0);
+      ctx.save();
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.shadowColor = 'rgba(255,236,190,0.9)';
+      ctx.shadowBlur = bl.u * 0.18 * k;
+      ctx.drawImage(sc, mk.x, mk.y, mk.w, mk.h);
+      ctx.restore();
+    }
+
+    // A bright slanted band sweeping across the words.
+    function shineBand(g, b, e) {
+      const gx = 0.94, gy = 0.34;
+      const proj = [[b.x, b.y], [b.x + b.w, b.y], [b.x, b.y + b.h], [b.x + b.w, b.y + b.h]].map(([x, y]) => x * gx + y * gy);
+      const p0 = Math.min(...proj), p1 = Math.max(...proj);
+      const bw = Math.max(b.h * 0.22, (p1 - p0) * 0.07);
+      const c = p0 - bw + e * (p1 - p0 + bw * 2);
+      const grad = g.createLinearGradient(gx * (c - bw), gy * (c - bw), gx * (c + bw), gy * (c + bw));
+      grad.addColorStop(0, 'rgba(255,248,225,0)');
+      grad.addColorStop(0.3, 'rgba(255,248,225,0.4)');
+      grad.addColorStop(0.5, 'rgba(255,252,240,1)');
+      grad.addColorStop(0.7, 'rgba(255,248,225,0.4)');
+      grad.addColorStop(1, 'rgba(255,248,225,0)');
+      g.fillStyle = grad;
+      g.fillRect(b.x - bw, b.y - bw, b.w + bw * 2, b.h + bw * 2);
+    }
+
+    const wave = (p, ph) => 0.5 + 0.5 * Math.sin(TAU * (p.n * ph + p.o));
+
+    function frame(ctx, t) {
+      const ph = (((t || 0) / ANIM_PERIOD) % 1 + 1) % 1;
+      const cw = ctx.canvas.width, ch = ctx.canvas.height, kx = cw / W, ky = ch / H;
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(under, 0, 0, cw, ch);
+
+      ctx.setTransform(kx, 0, 0, ky, 0, 0);
+      ctx.globalCompositeOperation = 'lighter';
+      for (const p of sparkles) {
+        const w = wave(p, ph);
+        const a = TAU * (ph + p.o);
+        const q = { ...p, x: p.x + Math.cos(a) * p.sway, y: p.y + Math.sin(a) * p.sway };
+        if (p.kind === 'star') drawSparkle(ctx, p, color, 0.3 + 0.7 * w * w, (ph * p.n * Math.PI) / 2);
+        else drawSparkle(ctx, q, color, p.kind === 'dot' ? w * w : 0.35 + 0.65 * w);
+      }
+
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(over, 0, 0, cw, ch);
+      ctx.setTransform(kx, 0, 0, ky, 0, 0);
+
+      blocks.forEach((bl, i) => {
+        const b = bl.b;
+        // Each block's shine starts a little after the one before.
+        const start = Math.min(0.55, i * 0.12), dur = 0.4;
+        const sp = A.shine ? ((ph - start + 1) % 1) / dur : 2;
+        if (bl.glitter || sp < 1) {
+          onLetters(ctx, bl, kx, (g) => {
+            if (bl.glitter) for (const p of bl.glitter) drawSparkle(g, p, null, 0.3 + 0.7 * Math.pow(wave(p, ph), 3));
+            if (sp < 1) shineBand(g, b, smooth(sp));
+          });
+        }
+        ctx.globalCompositeOperation = 'lighter';
+        for (const p of bl.stars || []) drawSparkle(ctx, p, color, 0.3 + 0.7 * wave(p, ph), (ph * p.n * Math.PI) / 2);
+        for (const p of bl.pops) {
+          const u = (ph * p.n + p.o) % 1;
+          if (u < 0.28) drawSparkle(ctx, p, color, Math.sin((Math.PI * u) / 0.28), (u / 0.28) * (Math.PI / 4));
+        }
+        // A glint at the corner as the shine finishes (not on small lines).
+        if (sp >= 0.55 && sp < 1 && bl.u >= m * 0.05) {
+          const k = Math.sin((Math.PI * (sp - 0.55)) / 0.45);
+          drawSparkle(ctx, { kind: 'star', x: b.x + b.w * 0.97, y: b.y + b.h * 0.1, s: Math.max(m * 0.018, Math.min(b.w, b.h) * 0.1), g: 1.8, a: 0.7 }, color, k, k * 0.4);
+        }
+        ctx.globalCompositeOperation = 'source-over';
+      });
+
+      if (floaters.length) {
+        ctx.globalCompositeOperation = 'lighter';
+        for (const p of floaters) {
+          const u = (ph + p.o) % 1;
+          const k = Math.sin(Math.PI * u);
+          const x = p.x + Math.sin(TAU * (u * 1.5 + p.o)) * m * 0.01, y = p.y0 - u * p.d;
+          if (p.star) drawSparkle(ctx, { kind: 'star', x, y, s: p.r * 1.3, g: 1.6, a: p.a }, color, k, u * Math.PI);
+          else {
+            drawSparkle(ctx, { kind: 'soft', x, y, r: p.r, a: p.a }, color, k);
+            drawSparkle(ctx, { kind: 'dot', x, y, r: p.r * 0.18, a: p.a }, color, k);
+          }
+        }
+      }
+      ctx.restore();
+    }
+
+    return { period: ANIM_PERIOD, width: under.width, height: under.height, frame };
   }
 
   return {
-    STYLES, TEXT_EFFECTS, TEXT_MARGIN, stylesFor, shapeOf, pxSize, validRows, theatreTotal, distribute, plan,
-    formatDates, fmtTime, showInfo, infoPreviewText, render,
+    STYLES, TEXT_EFFECTS, TEXT_MARGIN, ANIMATIONS, ANIM_PERIOD, stylesFor, shapeOf, pxSize, validRows, theatreTotal,
+    distribute, plan, formatDates, fmtTime, showInfo, infoPreviewText, render, animate,
   };
 })();

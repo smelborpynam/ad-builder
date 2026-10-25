@@ -13,10 +13,18 @@
   const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
   const yieldUI = () => new Promise((r) => setTimeout(r, 0));
 
-  const state = { acts: [], theatres: [], shows: [], tab: 'shows', galleryShowId: null, items: [], format: 'jpg' };
+  const FORMATS = [
+    { id: 'jpg', name: 'JPG', ok: () => true },
+    { id: 'png', name: 'PNG', ok: () => true },
+    { id: 'gif', name: 'Animated GIF', ok: () => true },
+    { id: 'mp4', name: 'Video (MP4)', ok: () => Mp4.supported() },
+  ];
+
+  const state = { acts: [], theatres: [], shows: [], tab: 'shows', galleryShowId: null, items: [], format: 'jpg', anim: 'both' };
   const actById = (id) => state.acts.find((a) => a.id === id);
   const theatreById = (id) => state.theatres.find((t) => t.id === id);
   const showById = (id) => state.shows.find((s) => s.id === id);
+  const isAnimated = () => state.format === 'gif' || state.format === 'mp4';
 
   // Images are loaded once per photo id and reused.
   const blobUrls = new Map();
@@ -779,7 +787,8 @@
         </div>
         <div class="gallery-tools">
           <label>Images <input type="number" id="galTotal" min="1" max="200" value="${showTotal(show, th)}" title="Theatre asks for ${def}"></label>
-          <label>Format <select id="galFormat"><option value="jpg" ${state.format === 'jpg' ? 'selected' : ''}>JPG</option><option value="png" ${state.format === 'png' ? 'selected' : ''}>PNG</option></select></label>
+          <label>Format <select id="galFormat">${FORMATS.map((f) => `<option value="${f.id}" ${state.format === f.id ? 'selected' : ''} ${f.ok() ? '' : 'disabled'}>${esc(f.ok() ? f.name : `${f.name} (needs Chrome or Edge)`)}</option>`).join('')}</select></label>
+          <label id="galAnimWrap" ${isAnimated() ? '' : 'hidden'}>Animation <select id="galAnim">${R.ANIMATIONS.map((a) => `<option value="${a.id}" ${state.anim === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
           <button class="btn small ghost" id="galAll">Select all</button>
           <button class="btn small ghost" id="galNone">Select none</button>
           <button class="btn small" data-action="edit-show" data-id="${show.id}">Edit show</button>
@@ -788,6 +797,7 @@
           <button class="btn primary" id="galDownload">Download</button>
         </div>
       </div>
+      <p class="hint gallery-note" id="galAnimHint" ${isAnimated() ? '' : 'hidden'}>Point at an image to see it move. Animated ads are for websites, social media, email and screens. Google's responsive display ads (the 20-image pack) only take still JPG or PNG images.</p>
       ${!act.photos.length ? '<div class="empty" style="margin-top:16px"><h3>No photos</h3><p>This act has no photos yet, so the ads only show the title. Edit the act to add photos.</p></div>' : ''}
       ${groups.map((g) => `
         <section class="size-group">
@@ -831,7 +841,12 @@
     `;
 
     $('#galBack').addEventListener('click', closeGallery);
-    $('#galFormat').addEventListener('change', (e) => { state.format = e.target.value; });
+    $('#galFormat').addEventListener('change', (e) => {
+      state.format = e.target.value;
+      $('#galAnimWrap').hidden = $('#galAnimHint').hidden = !isAnimated();
+      updateDownloadLabel();
+    });
+    $('#galAnim').addEventListener('change', (e) => { state.anim = e.target.value; });
     $('#galTotal').addEventListener('change', async (e) => {
       const n = Math.max(1, Math.min(200, Math.round(+e.target.value || def)));
       show.total = n === def ? null : n;
@@ -870,6 +885,7 @@
       });
       card.querySelector('[data-role=dl]').addEventListener('click', () => downloadOne(it, show, act, th));
       bindCardEditing(card, it, show, act, th);
+      bindCardAnimation(card, it, show, act, th);
     });
 
     renderAllCards(view, items, show, act, th);
@@ -1099,6 +1115,32 @@
     wrap.addEventListener('pointercancel', endDrag);
   }
 
+  // With an animated format picked, pointing at an image plays its animation.
+  function bindCardAnimation(card, it, show, act, th) {
+    const wrap = card.querySelector('.ad-canvas');
+    const canvas = wrap.querySelector('canvas');
+    card.addEventListener('mouseenter', async () => {
+      if (!isAnimated() || wrap.classList.contains('adjusting')) return;
+      const token = card._anim = (card._anim || 0) + 1;
+      const player = R.animate(await itemOptions(it, show, act, th, previewScale(it)), state.anim);
+      if (token !== card._anim) return;
+      card._playing = true;
+      const ctx = canvas.getContext('2d');
+      let t0 = null, last = 0;
+      const tick = (now) => {
+        if (token !== card._anim) return;
+        if (t0 === null) t0 = now;
+        if (now - last >= 30) { last = now; player.frame(ctx, (now - t0) / 1000); }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+    card.addEventListener('mouseleave', () => {
+      card._anim = (card._anim || 0) + 1;
+      if (card._playing) { card._playing = false; renderCard(card, it, show, act, th); }
+    });
+  }
+
   function setAllIncluded(show, on) {
     for (const it of state.items) it.included = on;
     show.excluded = on ? [] : state.items.map((x) => x.key);
@@ -1114,29 +1156,37 @@
     const n = state.items.filter((x) => x.included).length;
     const btn = $('#galDownload');
     if (!btn) return;
-    btn.textContent = `Download ${n} image${n === 1 ? '' : 's'} (ZIP)`;
+    const what = { gif: 'animated GIF', mp4: 'video' }[state.format] || 'image';
+    btn.textContent = `Download ${n} ${what}${n === 1 ? '' : 's'} (ZIP)`;
     btn.disabled = !n;
   }
 
-  // outline: name of the selected text block while editing words (preview only).
-  async function renderItem(canvas, it, show, act, th, scale, outline) {
+  // Everything R.render / R.animate need to draw one gallery image.
+  async function itemOptions(it, show, act, th, scale) {
     await fontsReady;
     const photo = act.photos.find((p) => p.id === it.photoId) || null;
     const img = photo ? await loadImage(photo.id, photo.blob).catch(() => null) : null;
     const logoImg = act.logo ? await loadImage(act.logo.id, act.logo.blob).catch(() => null) : null;
-    canvas._meta = R.render(canvas, {
+    return {
       w: it.w, h: it.h, scale, act, photo, img, logoImg,
       styleId: it.styleId, info: R.showInfo(show, th),
       localized: it.row.localized !== false, minimal: !!it.row.minimal, seed: it.key,
       adjust: it.adj || undefined,
       textAdjust: it.text || undefined,
-      outlineText: outline || undefined,
-    });
+    };
+  }
+
+  // outline: name of the selected text block while editing words (preview only).
+  async function renderItem(canvas, it, show, act, th, scale, outline) {
+    const o = await itemOptions(it, show, act, th, scale);
+    canvas._meta = R.render(canvas, { ...o, outlineText: outline || undefined });
   }
 
   const previewScale = (it) => Math.min(1, 640 / Math.max(it.w, it.h));
 
   async function renderCard(card, it, show, act, th) {
+    card._anim = (card._anim || 0) + 1; // stops a playing animation
+    card._playing = false;
     await renderItem(card.querySelector('canvas'), it, show, act, th, previewScale(it), card._outline);
   }
 
@@ -1157,16 +1207,81 @@
     });
   }
 
-  function fileName(it, idx, act, th, fmt) {
-    const label = slug(it.row.label || 'size');
-    return `${String(idx + 1).padStart(2, '0')}_${slug(act.name)}_${slug(th.displayName || th.name)}_${label}_${it.w}x${it.h}.${fmt}`;
+  // ---------- Animated downloads ----------
+  const GIF_DELAY = 8; // hundredths of a second per frame (12.5 frames a second)
+  const VIDEO_FPS = 30, VIDEO_LOOPS = 3;
+  const ANIM_MAX = 1920; // longest side of an animation; bigger (print) sizes are scaled down
+  const animScale = (it) => Math.min(1, ANIM_MAX / Math.max(it.w, it.h));
+
+  async function makeAnimated(it, show, act, th, fmt, onProgress) {
+    const scale = animScale(it);
+    const player = R.animate(await itemOptions(it, show, act, th, scale), state.anim);
+    const c = document.createElement('canvas');
+    try {
+      if (fmt === 'gif') {
+        c.width = player.width; c.height = player.height;
+        const ctx = c.getContext('2d', { willReadFrequently: true });
+        const pixels = (t) => { player.frame(ctx, t); return ctx.getImageData(0, 0, c.width, c.height).data; };
+        const frames = Math.round((player.period * 100) / GIF_DELAY);
+        const samples = [0, 0.2, 0.4, 0.6, 0.8].map((f) => pixels(f * player.period));
+        const gif = Gif.create(c.width, c.height, samples);
+        for (let i = 0; i < frames; i++) {
+          gif.addFrame(pixels((i * GIF_DELAY) / 100), GIF_DELAY);
+          if (onProgress) onProgress((i + 1) / frames);
+          if (i % 4 === 3) await yieldUI();
+        }
+        return new Blob([gif.finish()], { type: 'image/gif' });
+      }
+      // Videos need even sizes; drop the odd pixel.
+      c.width = Math.max(2, player.width - (player.width % 2));
+      c.height = Math.max(2, player.height - (player.height % 2));
+      const ctx = c.getContext('2d');
+      return await Mp4.encode({
+        width: c.width, height: c.height, fps: VIDEO_FPS,
+        frames: Math.round(player.period * VIDEO_FPS) * VIDEO_LOOPS,
+        draw: async (i) => { player.frame(ctx, i / VIDEO_FPS); if (i % 10 === 9) await yieldUI(); return c; },
+        onProgress,
+      });
+    } finally {
+      c.width = c.height = 0;
+    }
   }
 
-  async function downloadOne(it, show, act, th) {
+  async function makeBlob(it, show, act, th, onProgress) {
+    if (isAnimated()) return makeAnimated(it, show, act, th, state.format, onProgress);
     const c = document.createElement('canvas');
     await renderItem(c, it, show, act, th, 1);
     const blob = await canvasToBlob(c, state.format);
-    saveBlob(blob, fileName(it, state.items.indexOf(it), act, th, state.format));
+    c.width = c.height = 0;
+    return blob;
+  }
+
+  // Pixel size of the file: animations are capped at ANIM_MAX, and videos have even sides.
+  function outputSize(it, fmt) {
+    if (fmt !== 'gif' && fmt !== 'mp4') return { w: it.w, h: it.h };
+    const scale = animScale(it);
+    let w = Math.max(1, Math.round(it.w * scale)), h = Math.max(1, Math.round(it.h * scale));
+    if (fmt === 'mp4') { w = Math.max(2, w - (w % 2)); h = Math.max(2, h - (h % 2)); }
+    return { w, h };
+  }
+
+  function fileName(it, idx, act, th, fmt) {
+    const label = slug(it.row.label || 'size');
+    const { w, h } = outputSize(it, fmt);
+    return `${String(idx + 1).padStart(2, '0')}_${slug(act.name)}_${slug(th.displayName || th.name)}_${label}_${w}x${h}.${fmt}`;
+  }
+
+  async function downloadOne(it, show, act, th) {
+    const what = { gif: 'animated GIF', mp4: 'video' }[state.format];
+    try {
+      if (what) progress(`Making the ${what}…`, 0);
+      const blob = await makeBlob(it, show, act, th, (f) => progress(`Making the ${what}…`, f));
+      saveBlob(blob, fileName(it, state.items.indexOf(it), act, th, state.format));
+    } catch (err) {
+      alert(`Download failed: ${(err && err.message) || err}`);
+    } finally {
+      progress(null);
+    }
   }
 
   async function downloadZip() {
@@ -1177,15 +1292,14 @@
     if (!items.length) return;
     const zip = Zip.create();
     try {
+      const what = { gif: 'animated GIF', mp4: 'video' }[state.format] || 'full-size image';
       for (let i = 0; i < items.length; i++) {
-        progress(`Creating full-size image ${i + 1} of ${items.length}…`, i / items.length);
+        const text = `Creating ${what} ${i + 1} of ${items.length}…`;
+        progress(text, i / items.length);
         await yieldUI();
         const it = items[i];
-        const c = document.createElement('canvas');
-        await renderItem(c, it, show, act, th, 1);
-        const blob = await canvasToBlob(c, state.format);
+        const blob = await makeBlob(it, show, act, th, (f) => progress(text, (i + f) / items.length));
         zip.add(fileName(it, state.items.indexOf(it), act, th, state.format), new Uint8Array(await blob.arrayBuffer()));
-        c.width = c.height = 0;
       }
       progress('Packing ZIP…', 1);
       await yieldUI();

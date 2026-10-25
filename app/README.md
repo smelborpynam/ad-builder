@@ -28,6 +28,22 @@ The folder holds `ad-builder-data.json` (all profiles), `photos/` (each photo sa
    To fix the words, click **✎ Edit words**. Dashed outlines show the title and the theatre & date; click one to pick it (gold outline), drag it to move it, use **+ / −** to resize it, and choose an **Effect** for just those words (Sparkle, Glow, Gold shine, Outline, Neon, Dark backing, 3D shadow). Words always stay inside the picture. **Reset** puts the picked words back.
    **⧉ De-group** breaks the picked words into pieces (the title into its lines, e.g. “Christmas”, “with”, “THE RAT PACK”; the theatre & date into “Mendel Center,” and “Dec 6”) so each piece can be moved, resized and given its own effect. Pick any piece and click **⧉ Re-group** to join them back.
 
+## Animated ads
+
+In the gallery, set **Format** to **Animated GIF** or **Video (MP4)**, then pick an **Animation**:
+
+- **Glisten & twinkle**: a light sweeps across the words, and little stars pop on the letters.
+- **Words glisten**: just the light sweep.
+- **Twinkling stars**: just the stars.
+- **Floating sparkles**: gold sparkles drift up across the picture, and the words glisten.
+
+Sparkles already in a picture (the gold sparkle look, or the Sparkle effect on words) always twinkle and shimmer. Point at any image to watch it move, then download as usual. Each image keeps its own photo, crop, look and word edits.
+
+- **Animated GIF** loops every 3.2 seconds and plays almost anywhere: websites (like the County17 banners), email and marquees.
+- **Video (MP4)** is about 10 seconds (the loop three times), for Facebook/Instagram posts and reels, and TV slides. It needs Chrome or Edge.
+
+Animations are at most 1920 pixels on the long side, so print sizes come out smaller. **Google Ads:** responsive display ads (the 20-image pack) only take still JPG or PNG images. Google's uploaded animated GIF ads have stricter rules (under 150 KB, slower than 5 frames a second), which these GIFs don't follow.
+
 ## How the images are made
 
 For each size, the first images are **clean** versions, one per photo. If more are needed than there are photos, the app works through styled looks in order: gold sparkle, black & white, spotlight, gold frame, warm glow, full photo on blur, flipped layout, close-up, accent tint, cinematic bars.
@@ -41,3 +57,4 @@ Photos marked **Has title art** are never cropped more than a sliver. When the s
 - `js/app.js`: screens, editors, gallery, downloads, backup
 - `js/presets.js`: fonts, size presets, the Google pack, starter theatres
 - `js/db.js`, `js/zip.js`: browser storage and ZIP writer
+- `js/gif.js`, `js/mp4.js`: animated GIF and MP4 video writers
