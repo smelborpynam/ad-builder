@@ -517,15 +517,18 @@ window.AdRender = (() => {
   }
 
   // ---------- Text ----------
-  // Both text painters return the area actually covered, so the gallery can let people drag it.
-  function drawTitle(ctx, box, act, logoImg) {
+  // Text is laid out first as "parts" (one per title line, one per theatre/date segment), then painted.
+  // Grouped, all parts of a block are painted together; de-grouped, each part moves on its own.
+  // Each part: { text, size, cx, cy, w, h, bounds, paint(ctx) } — paint draws it centred at (0, 0).
+
+  function layoutTitle(ctx, box, act, logoImg) {
     if (logoImg) {
       const fit = containFit(logoImg.naturalWidth || logoImg.width, logoImg.naturalHeight || logoImg.height, box);
-      ctx.save();
-      shadowFor(ctx, fit.h * 0.25);
-      ctx.drawImage(logoImg, fit.x, fit.y, fit.w, fit.h);
-      ctx.restore();
-      return fit;
+      const part = {
+        text: 'Logo', cx: fit.x + fit.w / 2, cy: fit.y + fit.h / 2, w: fit.w, h: fit.h, bounds: fit,
+        paint: (c) => { shadowFor(c, fit.h * 0.25); c.drawImage(logoImg, -fit.w / 2, -fit.h / 2, fit.w, fit.h); },
+      };
+      return { parts: [part], bounds: fit };
     }
     const t = act.title || {}, s = act.style;
     const hasPre = !!(t.pre && t.pre.trim());
@@ -548,47 +551,55 @@ window.AdRender = (() => {
       blockW = Math.max(blockW, need);
       blockH += size * l.lh;
     }
+    ctx.restore();
     const S = 100 * Math.min(box.w / blockW, box.h / blockH);
     const k = S / 100;
     const bw = blockW * k;
     const cx = box.x + box.w / 2;
     let y = box.y + (box.h - blockH * k) / 2;
     const bounds = { x: cx - bw / 2, y, w: bw, h: blockH * k };
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (const l of lines) {
+    const parts = lines.map((l) => {
       const size = l.ratio * S;
       const lineH = size * l.lh;
       const cy = y + lineH / 2;
-      ctx.font = font(l.family, size);
-      setSpacing(ctx, l.ls * size);
-      shadowFor(ctx, size);
-      ctx.fillStyle = l.color;
-      ctx.fillText(l.text, cx + (HAS_LETTER_SPACING ? l.ls * size / 2 : 0), cy);
-      if (l.flank) {
-        const tw = l.w100 * k;
-        const gap = size * 0.6;
-        ctx.strokeStyle = l.color;
-        ctx.lineWidth = Math.max(1, size * 0.07);
-        ctx.beginPath();
-        ctx.moveTo(cx - bw / 2, cy); ctx.lineTo(cx - tw / 2 - gap, cy);
-        ctx.moveTo(cx + tw / 2 + gap, cy); ctx.lineTo(cx + bw / 2, cy);
-        ctx.stroke();
-      }
       y += lineH;
-    }
-    setSpacing(ctx, 0);
-    ctx.restore();
-    return bounds;
+      const tw = l.w100 * k;
+      const w = l.flank ? bw : tw;
+      return {
+        text: l.text, size, cx, cy, w, h: lineH, bounds: { x: cx - w / 2, y: cy - lineH / 2, w, h: lineH },
+        paint: (c) => {
+          c.textAlign = 'center';
+          c.textBaseline = 'middle';
+          c.font = font(l.family, size);
+          setSpacing(c, l.ls * size);
+          shadowFor(c, size);
+          c.fillStyle = l.color;
+          c.fillText(l.text, HAS_LETTER_SPACING ? (l.ls * size) / 2 : 0, 0);
+          setSpacing(c, 0);
+          if (l.flank) {
+            const gap = size * 0.6;
+            c.strokeStyle = l.color;
+            c.lineWidth = Math.max(1, size * 0.07);
+            c.beginPath();
+            c.moveTo(-w / 2, 0); c.lineTo(-tw / 2 - gap, 0);
+            c.moveTo(tw / 2 + gap, 0); c.lineTo(w / 2, 0);
+            c.stroke();
+          }
+        },
+      };
+    });
+    return { parts, bounds };
   }
 
-  function drawInfo(ctx, box, info, act, opts) {
+  // Theatre & date. Each line is made of segments: "Mendel Center," and "Dec 6" stay separate
+  // pieces even when shown on one line, so they can be de-grouped.
+  function layoutInfo(ctx, box, info, act, opts) {
     let candidates;
-    if (info.custom) candidates = [info.custom.split(/\s*[|\n]\s*/).filter(Boolean)];
-    else if (opts.minimal) candidates = [[info.dates || info.venue]];
-    else if (info.venue && info.dates) candidates = [[`${info.venue}, ${info.dates}`], [info.venue, info.dates]];
-    else candidates = [[info.venue || info.dates]];
-    candidates = candidates.map((c) => c.filter(Boolean)).filter((c) => c.length);
+    if (info.custom) candidates = [info.custom.split(/\s*[|\n]\s*/).filter(Boolean).map((l) => [l])];
+    else if (opts.minimal) candidates = [[[info.dates || info.venue]]];
+    else if (info.venue && info.dates) candidates = [[[`${info.venue},`, info.dates]], [[info.venue], [info.dates]]];
+    else candidates = [[[info.venue || info.dates]]];
+    candidates = candidates.map((c) => c.map((segs) => segs.filter(Boolean)).filter((segs) => segs.length)).filter((c) => c.length);
     if (!candidates.length) return null;
 
     const fam = act.style.infoFont;
@@ -596,10 +607,14 @@ window.AdRender = (() => {
     const extra = !opts.minimal ? info.extra : '';
     const extraRatio = 0.45;
     ctx.save();
+    ctx.font = font(fam, 100);
+    const space100 = ctx.measureText(' ').width;
+    const segW100 = (seg) => ctx.measureText(seg).width;
+    const lineW100 = (segs) => segs.reduce((n, sg) => n + segW100(sg), 0) + space100 * (segs.length - 1);
     let best = null;
     for (const lines of candidates) {
       ctx.font = font(fam, 100);
-      let maxW = Math.max(...lines.map((l) => ctx.measureText(l).width));
+      let maxW = Math.max(...lines.map(lineW100));
       let totalH = lines.length * lh * 100;
       if (extra) {
         ctx.font = font(fam, 100 * extraRatio);
@@ -611,24 +626,53 @@ window.AdRender = (() => {
       if (!best || score > best.score) best = { lines, size, score, totalH: (totalH / 100) * size, w: (maxW / 100) * size };
     }
     const { lines, size } = best;
+    const k = size / 100;
+    ctx.font = font(fam, 100);
     let y = box.y + (box.h - best.totalH) / 2;
     const cx = box.x + box.w / 2;
     const bounds = { x: cx - best.w / 2, y, w: best.w, h: best.totalH };
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    const paint = (text, sz, lineH) => {
+
+    const makePart = (text, sz, pcx, cy, w, lineH) => ({
+      text, size: sz, cx: pcx, cy, w, h: lineH, bounds: { x: pcx - w / 2, y: cy - lineH / 2, w, h: lineH },
+      paint: (c) => {
+        c.textAlign = 'center';
+        c.textBaseline = 'middle';
+        c.font = font(fam, sz);
+        shadowFor(c, sz);
+        c.fillStyle = act.style.infoGold ? goldGradient(c, -sz * 0.45, sz * 0.45) : act.style.infoColor;
+        c.fillText(text, 0, 0);
+      },
+    });
+    const parts = [];
+    for (const segs of lines) {
+      const lineH = size * lh;
       const cy = y + lineH / 2;
-      ctx.font = font(fam, sz);
-      shadowFor(ctx, sz);
-      ctx.fillStyle = act.style.infoGold ? goldGradient(ctx, cy - sz * 0.45, cy + sz * 0.45) : act.style.infoColor;
-      ctx.fillText(text, cx, cy);
+      let x = cx - (lineW100(segs) * k) / 2;
+      for (const sg of segs) {
+        const w = segW100(sg) * k;
+        parts.push(makePart(sg, size, x + w / 2, cy, w, lineH));
+        x += w + space100 * k;
+      }
       y += lineH;
-    };
-    for (const l of lines) paint(l, size, size * lh);
-    if (extra) paint(extra, size * extraRatio, size * extraRatio * 1.35);
-    noShadow(ctx);
+    }
+    if (extra) {
+      const sz = size * extraRatio, lineH = sz * 1.35;
+      ctx.font = font(fam, 100);
+      parts.push(makePart(extra, sz, cx, y + lineH / 2, (ctx.measureText(extra).width / 100) * sz, lineH));
+    }
     ctx.restore();
-    return bounds;
+    return { parts, bounds };
+  }
+
+  // Paints one part at its spot, shifted by (dx, dy) image units and scaled by s around its centre.
+  function paintPart(ctx, p, dx = 0, dy = 0, s = 1) {
+    ctx.save();
+    ctx.translate(p.cx + dx, p.cy + dy);
+    ctx.scale(s, s);
+    p.paint(ctx);
+    ctx.restore();
+    const w = p.w * s, h = p.h * s;
+    return { x: p.cx + dx - w / 2, y: p.cy + dy - h / 2, w, h };
   }
 
   // Moves/resizes a text box by a hand adjustment { dx, dy } (fractions of the image) and s (size).
@@ -793,29 +837,33 @@ window.AdRender = (() => {
   }
 
   // Hand-moved words never leave the picture: shrink them if too big, then nudge them back in.
-  // `paint(ctx, box)` is run on a scratch canvas just to find out where the words would land.
-  let scratchCtx = null;
   const TEXT_MARGIN = 0.03; // of the image's shorter side
-  function keepInside(box, paint, W, H) {
-    if (!scratchCtx) scratchCtx = document.createElement('canvas').getContext('2d');
-    const measure = (b) => {
-      scratchCtx.setTransform(1, 0, 0, 1, 0, 0);
-      return paint(scratchCtx, b);
-    };
-    let m = measure(box);
-    if (!m) return box;
+
+  // How much to shrink (k ≤ 1) and shift (sx, sy) a rectangle so it fits inside the image.
+  function fitInside(m, W, H) {
     const margin = Math.min(W, H) * TEXT_MARGIN;
     const k = Math.min(1, (W - margin * 2) / m.w, (H - margin * 2) / m.h);
+    const w = m.w * k, h = m.h * k;
+    const x = m.x + (m.w - w) / 2, y = m.y + (m.h - h) / 2;
+    let sx = 0, sy = 0;
+    if (x < margin) sx = margin - x;
+    else if (x + w > W - margin) sx = W - margin - (x + w);
+    if (y < margin) sy = margin - y;
+    else if (y + h > H - margin) sy = H - margin - (y + h);
+    return { k, sx, sy };
+  }
+
+  // For a whole block: `boundsOf(box)` says where the words would land in that box.
+  function keepInside(box, boundsOf, W, H) {
+    let m = boundsOf(box);
+    if (!m) return box;
+    const { k } = fitInside(m, W, H);
     if (k < 1) {
       box = adjustBox(box, { s: k }, W, H);
-      m = measure(box);
+      m = boundsOf(box);
       if (!m) return box;
     }
-    let sx = 0, sy = 0;
-    if (m.x < margin) sx = margin - m.x;
-    else if (m.x + m.w > W - margin) sx = W - margin - (m.x + m.w);
-    if (m.y < margin) sy = margin - m.y;
-    else if (m.y + m.h > H - margin) sy = H - margin - (m.y + m.h);
+    const { sx, sy } = fitInside(m, W, H);
     return { ...box, x: box.x + sx, y: box.y + sy };
   }
 
@@ -898,23 +946,45 @@ window.AdRender = (() => {
       ctx.fillRect(0, 0, W, H * 0.1);
       ctx.fillRect(0, H * 0.9, W, H * 0.1);
     }
-    const text = { title: null, info: null };
+    // text: where each block or de-grouped piece landed; labels: what to call it; parts: how many pieces.
+    const text = {}, labels = {}, partCount = {};
     const effectOf = (k) => ta[k] && ta[k].fx;
+    const split = ta.split || {};
     const cap = (shape === 'strip' ? H * 0.42 : Math.min(W, H) * 0.13) * ((ta.info && ta.info.s) || 1);
     const infoOpts = { minimal: !!o.minimal, cap: o.minimal ? cap * 1.4 : cap };
-    const painters = {
-      title: (c, box) => drawTitle(c, box, act, o.logoImg),
-      info: (c, box) => drawInfo(c, box, o.info, act, infoOpts),
+    const layouts = {
+      title: (box) => layoutTitle(ctx, box, act, o.logoImg),
+      info: (box) => layoutInfo(ctx, box, o.info, act, infoOpts),
     };
+    const BLOCK_NAMES = { title: 'Title', info: 'Theatre & date' };
     for (const k of ['title', 'info']) {
       let box = k === 'title' ? L.titleBox : L.infoBox;
       if (!box) continue;
-      if (ta[k]) box = keepInside(box, painters[k], W, H);
-      text[k] = drawTextBlock(ctx, scale, effectOf(k), (c) => painters[k](c, box), s, rand);
+      if (ta[k]) box = keepInside(box, (b) => { const l = layouts[k](b); return l && l.bounds; }, W, H);
+      const lay = layouts[k](box);
+      if (!lay) continue;
+      partCount[k] = lay.parts.length;
+      if (!split[k] || lay.parts.length < 2) {
+        text[k] = drawTextBlock(ctx, scale, effectOf(k), (c) => { lay.parts.forEach((p) => paintPart(c, p)); return lay.bounds; }, s, rand);
+        labels[k] = BLOCK_NAMES[k];
+        continue;
+      }
+      // De-grouped: every piece has its own move, size and effect (falling back to the block's effect).
+      lay.parts.forEach((p, i) => {
+        const key = `${k}.${i}`;
+        const a = ta[key] || {};
+        const sc = a.s || 1;
+        let dx = (a.dx || 0) * W, dy = (a.dy || 0) * H;
+        const w = p.w * sc, h = p.h * sc;
+        const fit = fitInside({ x: p.cx + dx - w / 2, y: p.cy + dy - h / 2, w, h }, W, H);
+        dx += fit.sx; dy += fit.sy;
+        text[key] = drawTextBlock(ctx, scale, a.fx || effectOf(k), (c) => paintPart(c, p, dx, dy, sc * fit.k), s, rand);
+        labels[key] = `“${p.text}”`;
+      });
     }
     if (styleId === 'frame') drawFrame(ctx, W, H, s.mainColor || '#d9b45a');
     if (o.outlineText) drawTextOutlines(ctx, text, o.outlineText, scale);
-    return { photo: meta, text };
+    return { photo: meta, text, labels, partCount };
   }
 
   return {

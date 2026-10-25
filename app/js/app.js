@@ -821,6 +821,7 @@
                   <select data-role="text-fx" title="Effect on these words">${R.TEXT_EFFECTS.map((f) => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select>
                   <button class="btn small" data-role="text-smaller" title="Smaller">−</button>
                   <button class="btn small" data-role="text-bigger" title="Bigger">+</button>
+                  <button class="btn small ghost" data-role="text-group" hidden></button>
                   <button class="btn small ghost" data-role="text-reset" title="Put these words back">Reset</button>
                   <button class="btn small primary" data-role="done">Done</button>
                 </div>
@@ -886,7 +887,6 @@
 
   const cropLabel = (it) => `✥ Adjust crop${it.adj ? ' •' : ''}`;
   const wordsLabel = (it) => `✎ Edit words${it.text ? ' •' : ''}`;
-  const TEXT_NAMES = { title: 'Title', info: 'Theatre & date' };
 
   // Hand edits on one image: drag/zoom the photo ("crop"), or move/resize/style the words ("words").
   function bindCardEditing(card, it, show, act, th) {
@@ -898,6 +898,7 @@
     const bars = { crop: card.querySelector('[data-bar=crop]'), words: card.querySelector('[data-bar=words]') };
     const fxSelect = bars.words.querySelector('[data-role=text-fx]');
     const selName = bars.words.querySelector('[data-role=sel-name]');
+    const groupBtn = bars.words.querySelector('[data-role=text-group]');
     let mode = null;
     let drag = null;
     let pending = false, dirty = false;
@@ -917,20 +918,43 @@
     const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
     // ----- words helpers -----
+    // it.text holds one entry per block ("title", "info") or de-grouped piece ("title.0", "info.1"),
+    // plus split: { title: true } for blocks that are de-grouped.
     const blocks = () => (canvas._meta && canvas._meta.text) || {};
     const textOf = (k) => (it.text && it.text[k]) || {};
+    const tidy = (all) => {
+      if (all.split && !Object.keys(all.split).length) delete all.split;
+      it.text = Object.keys(all).length ? all : null;
+    };
     const setText = (k, patch) => {
       const next = { ...textOf(k), ...patch };
       Object.keys(next).forEach((key) => next[key] === undefined && delete next[key]);
       const all = { ...(it.text || {}), [k]: next };
       if (!Object.keys(next).length) delete all[k];
-      it.text = Object.keys(all).length ? all : null;
+      tidy(all);
     };
+    const blockOf = (k) => k.split('.')[0];
+    const isPiece = (k) => k.includes('.');
     const select = (k) => {
+      const meta = canvas._meta || {};
       card._outline = k;
       card._lastBlock = k;
-      selName.textContent = TEXT_NAMES[k] || '';
-      fxSelect.value = textOf(k).fx || 'none';
+      selName.textContent = (meta.labels && meta.labels[k]) || '';
+      fxSelect.value = textOf(k).fx || (isPiece(k) && textOf(blockOf(k)).fx) || 'none';
+      // De-group a block made of several pieces; re-group from any of its pieces.
+      const pieces = (meta.partCount && meta.partCount[blockOf(k)]) || 0;
+      groupBtn.hidden = !isPiece(k) && pieces < 2;
+      groupBtn.textContent = isPiece(k) ? '⧉ Re-group' : '⧉ De-group';
+      groupBtn.title = isPiece(k) ? 'Join these pieces back together' : 'Break these words apart to move each piece on its own';
+    };
+    const setSplit = (block, on) => {
+      const all = { ...(it.text || {}) };
+      const split = { ...(all.split || {}) };
+      // Drop the pieces' own edits either way, so de-grouping starts from the current look.
+      Object.keys(all).forEach((key) => { if (key.startsWith(`${block}.`)) delete all[key]; });
+      if (on) split[block] = true; else delete split[block];
+      all.split = split;
+      tidy(all);
     };
 
     // ----- crop helper: current placement, so the first drag starts from what's on screen -----
@@ -951,9 +975,9 @@
       wrap.classList.toggle('adjusting', !!m);
       card._outline = null;
       if (m === 'words') {
-        const b = blocks();
-        if (!b.title && !b.info) { alert('This image has no words to edit.'); setMode(null); return; }
-        select(card._lastBlock && b[card._lastBlock] ? card._lastBlock : (b.title ? 'title' : 'info'));
+        const keys = Object.keys(blocks());
+        if (!keys.length) { alert('This image has no words to edit.'); setMode(null); return; }
+        select(keys.includes(card._lastBlock) ? card._lastBlock : keys[0]);
       }
       if (cropBtn) cropBtn.textContent = cropLabel(it);
       wordsBtn.textContent = wordsLabel(it);
@@ -963,7 +987,9 @@
     if (cropBtn) cropBtn.addEventListener('click', () => setMode('crop'));
     wordsBtn.addEventListener('click', () => setMode('words'));
     fxSelect.addEventListener('change', () => {
-      setText(card._outline, { fx: fxSelect.value === 'none' ? undefined : fxSelect.value });
+      const k = card._outline;
+      // A piece keeps an explicit "none" so it can opt out of its block's effect.
+      setText(k, { fx: fxSelect.value === 'none' && !isPiece(k) ? undefined : fxSelect.value });
       changed();
     });
 
@@ -984,6 +1010,15 @@
         }
       } else {
         const k = card._outline;
+        if (role === 'text-group') {
+          const block = blockOf(k);
+          setSplit(block, !isPiece(k));
+          // After drawing, pick the first piece (de-grouped) or the whole block (re-grouped).
+          card._lastBlock = isPiece(k) ? block : `${block}.0`;
+          saveOverride(show, it);
+          renderCard(card, it, show, act, th).then(() => select(card._lastBlock)).then(redraw);
+          return;
+        }
         if (role === 'text-reset') { setText(k, { dx: undefined, dy: undefined, s: undefined, fx: undefined }); select(k); changed(); }
         if (role === 'text-bigger' || role === 'text-smaller') {
           const s = textOf(k).s || 1;
@@ -998,15 +1033,18 @@
       const r = wrap.getBoundingClientRect();
       return { x: ((e.clientX - r.left) * it.w) / r.width, y: ((e.clientY - r.top) * it.h) / r.height };
     };
-    // Which words are under the pointer (with a little slack); the closer centre wins if both.
+    // Which words are under the pointer (with a little slack). Words the pointer is actually on win;
+    // otherwise the nearest; ties go to the closer centre.
     const hit = (p) => {
       const b = blocks();
       const m = Math.min(it.w, it.h) * 0.04;
       let best = null;
-      for (const k of ['title', 'info']) {
-        const r = b[k];
-        if (!r || p.x < r.x - m || p.x > r.x + r.w + m || p.y < r.y - m || p.y > r.y + r.h + m) continue;
-        const d = Math.hypot(p.x - (r.x + r.w / 2), p.y - (r.y + r.h / 2));
+      for (const [k, r] of Object.entries(b)) {
+        if (!r) continue;
+        const ox = Math.max(0, r.x - p.x, p.x - (r.x + r.w));
+        const oy = Math.max(0, r.y - p.y, p.y - (r.y + r.h));
+        if (ox > m || oy > m) continue;
+        const d = Math.hypot(ox, oy) * 1000 + Math.hypot(p.x - (r.x + r.w / 2), p.y - (r.y + r.h / 2));
         if (!best || d < best.d) best = { k, d };
       }
       return best && best.k;
