@@ -138,6 +138,17 @@
       </div>
 
       <fieldset>
+        <legend>Theatre logo</legend>
+        <p class="hint">Optional. Use a PNG with a see-through background. On the ads page you can tick <b>Theatre logo</b> to put it on the images, then move and resize it on any image.</p>
+        <div class="logo-row">
+          <div class="logo-preview" id="thLogoPreview">No logo</div>
+          <label class="btn small">Upload logo<input type="file" id="thLogoInput" accept="image/png" hidden></label>
+          <button type="button" class="btn small ghost" id="thLogoRemove">Remove</button>
+          <span class="muted small" id="thLogoNote"></span>
+        </div>
+      </fieldset>
+
+      <fieldset>
         <legend>Image requirements</legend>
         <p class="hint">One row per size. <b>Count</b> is how many different images to make at that size. Turn off <b>Theatre &amp; date</b> for sizes that shouldn't name the venue (like a website feature). <b>Minimal</b> keeps only the title and dates, as large as possible (for marquees).</p>
         <div class="table-wrap">

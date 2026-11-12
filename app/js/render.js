@@ -921,6 +921,40 @@ window.AdRender = (() => {
     return { ...box, x: box.x + sx, y: box.y + sy };
   }
 
+  // ---------- Theatre logo ----------
+  // The theatre's own logo, drawn on top of everything. Its home spot is the top-right corner;
+  // until it's moved by hand it hops to whichever corner is clear of the words.
+  // a: { dx, dy } (fractions of the image, from the top-right spot), s (size), fx (effect).
+  // Returns where it landed and its offset from the top-right spot (so dragging starts from there).
+  function drawTheatreLogo(ctx, scale, img, a, text, shape, W, H, style, rand) {
+    const iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+    const strip = shape === 'strip';
+    const m = Math.min(W, H) * (strip ? 0.12 : 0.04);
+    const base = containFit(iw, ih, { x: 0, y: 0, w: W * (strip ? 0.16 : 0.22), h: H * (strip ? 0.72 : 0.15) });
+    const s1 = a.s || 1;
+    const w = base.w * s1, h = base.h * s1;
+    const home = { x: W - m - base.w / 2, y: m + base.h / 2 }; // centre of the logo at its top-right spot
+
+    let dx = a.dx, dy = a.dy;
+    if (dx === undefined || dy === undefined) {
+      const corners = strip
+        ? [[W - m - w / 2, H / 2]]
+        : [[W - m - w / 2, m + h / 2], [m + w / 2, m + h / 2], [W - m - w / 2, H - m - h / 2], [m + w / 2, H - m - h / 2]];
+      const busy = Object.values(text).filter(Boolean);
+      const clear = ([x, y]) => !busy.some((b) => x + w / 2 > b.x && x - w / 2 < b.x + b.w && y + h / 2 > b.y && y - h / 2 < b.y + b.h);
+      const [x, y] = corners.find(clear) || corners[0];
+      dx = (x - home.x) / W;
+      dy = (y - home.y) / H;
+    }
+    let cx = home.x + dx * W, cy = home.y + dy * H;
+    const fit = fitInside({ x: cx - w / 2, y: cy - h / 2, w, h }, W, H);
+    cx += fit.sx; cy += fit.sy;
+    const fw = w * fit.k, fh = h * fit.k;
+    const p = piece('Theatre logo', fh, cx, cy, fw, fh, (c) => c.drawImage(img, -fw / 2, -fh / 2, fw, fh));
+    const bounds = drawTextBlock(ctx, scale, a.fx, (c) => paintPart(c, p), style, rand, null);
+    return { bounds, offset: { dx: (cx - home.x) / W, dy: (cy - home.y) / H } };
+  }
+
   // Dashed outlines shown only while editing words in the gallery (never in downloads).
   function drawTextOutlines(ctx, text, selected, scale) {
     ctx.save();
@@ -1075,8 +1109,13 @@ window.AdRender = (() => {
       });
     }
     if (styleId === 'frame') drawFrame(top, W, H, s.mainColor || '#d9b45a');
+    const logoAt = o.theatreLogo ? drawTheatreLogo(top, scale, o.theatreLogo, ta.logo || {}, text, shape, W, H, s, rand) : null;
+    if (logoAt) {
+      text.logo = logoAt.bounds;
+      labels.logo = 'Theatre logo';
+    }
     if (o.outlineText) drawTextOutlines(ctx, text, o.outlineText, scale);
-    return { photo: meta, text, labels, splittable, parent, anim };
+    return { photo: meta, text, labels, splittable, parent, anim, logoOffset: logoAt && logoAt.offset };
   }
 
   // ---------- Animation ----------

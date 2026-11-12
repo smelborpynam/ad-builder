@@ -250,7 +250,7 @@
       const where = [t.city, t.state].filter(Boolean).join(', ');
       const rows = R.validRows(t);
       return `<div class="row-card">
-        <div class="thumb">🎭</div>
+        <div class="thumb">${t.logo ? `<img class="logo-thumb" src="${blobUrl(t.logo.id, t.logo.blob)}" alt="">` : '🎭'}</div>
         <div>
           <div class="row-title">${esc(t.name)}</div>
           <div class="row-sub">${where ? `${esc(where)} · ` : ''}Ads say “${esc(t.displayName || t.name)}” · ${rows.length} size${rows.length === 1 ? '' : 's'} · ${R.theatreTotal(t)} images</div>
@@ -513,7 +513,44 @@
       renderSizeRows();
     });
 
+    $('#thLogoInput').addEventListener('change', async (e) => {
+      const f = e.target.files[0];
+      e.target.value = '';
+      if (!f) return;
+      if (f.type !== 'image/png') { alert('Please use a PNG file, so the logo can have a see-through background.'); return; }
+      const id = uid();
+      try {
+        const im = await loadImage(id, f);
+        thDraft.logo = { id, blob: f, name: f.name, w: im.naturalWidth, h: im.naturalHeight };
+        thDraft.logo.opaque = !hasTransparency(im);
+      } catch { alert(`Couldn't read ${f.name}.`); }
+      renderTheatreLogo();
+    });
+    $('#thLogoRemove').addEventListener('click', () => { thDraft.logo = null; renderTheatreLogo(); });
+
     $('#theatreForm').addEventListener('submit', async (e) => { e.preventDefault(); await saveTheatre(); });
+  }
+
+  // True if any pixel of the image is see-through (checked on a small copy).
+  function hasTransparency(im) {
+    const c = document.createElement('canvas');
+    const k = Math.min(1, 200 / Math.max(im.naturalWidth, im.naturalHeight));
+    c.width = Math.max(1, Math.round(im.naturalWidth * k));
+    c.height = Math.max(1, Math.round(im.naturalHeight * k));
+    const g = c.getContext('2d');
+    g.drawImage(im, 0, 0, c.width, c.height);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    for (let i = 3; i < d.length; i += 4) if (d[i] < 250) return true;
+    return false;
+  }
+
+  function renderTheatreLogo() {
+    const logo = thDraft.logo;
+    $('#thLogoPreview').innerHTML = logo ? `<img src="${blobUrl(logo.id, logo.blob)}" alt="">` : 'No logo';
+    $('#thLogoRemove').hidden = !logo;
+    $('#thLogoNote').textContent = logo
+      ? `${logo.w}×${logo.h}${logo.opaque ? ' · this PNG has no see-through background, so it will show as a solid box' : ''}`
+      : '';
   }
 
   function openTheatreEditor(theatre, duplicate) {
@@ -532,6 +569,8 @@
     e.city.value = thDraft.city;
     e.state.value = thDraft.state;
     e.notes.value = thDraft.notes;
+    thDraft.logo = thDraft.logo || null;
+    renderTheatreLogo();
     renderSizeRows();
     $('#theatreDialog').showModal();
   }
@@ -742,6 +781,7 @@
         if (o.styleId) it.styleId = o.styleId;
         if (o.adj && o.photoId === it.photoId) it.adj = o.adj;
         if (o.text) it.text = o.text;
+        if (o.noLogo) it.noLogo = true;
       }
       it.included = !(show.excluded || []).includes(it.key);
     }
@@ -764,6 +804,7 @@
     const items = buildItems(show, act, th);
     state.items = items;
     const def = R.theatreTotal(th);
+    const logoOn = !!(show.logoOn && th.logo);
 
     const groups = [];
     for (const it of items) {
@@ -789,6 +830,7 @@
           <label>Images <input type="number" id="galTotal" min="1" max="200" value="${showTotal(show, th)}" title="Theatre asks for ${def}"></label>
           <label>Format <select id="galFormat">${FORMATS.map((f) => `<option value="${f.id}" ${state.format === f.id ? 'selected' : ''} ${f.ok() ? '' : 'disabled'}>${esc(f.ok() ? f.name : `${f.name} (needs Chrome or Edge)`)}</option>`).join('')}</select></label>
           <label id="galAnimWrap" ${isAnimated() ? '' : 'hidden'}>Animation <select id="galAnim">${R.ANIMATIONS.map((a) => `<option value="${a.id}" ${state.anim === a.id ? 'selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
+          <label title="${th.logo ? 'Put the theatre’s logo on the images. Move or resize it with Edit words & logo.' : 'This theatre has no logo yet: add one with Edit theatre.'}"><input type="checkbox" id="galLogo" ${th.logo ? '' : 'disabled'} ${logoOn ? 'checked' : ''}> Theatre logo</label>
           <button class="btn small ghost" id="galAll">Select all</button>
           <button class="btn small ghost" id="galNone">Select none</button>
           <button class="btn small" data-action="edit-show" data-id="${show.id}">Edit show</button>
@@ -808,6 +850,7 @@
                 <div class="ad-canvas" style="aspect-ratio:${it.w}/${it.h}"><canvas></canvas></div>
                 <div class="ad-meta">
                   <label class="check"><input type="checkbox" data-role="include" ${it.included ? 'checked' : ''}> #${it.n}</label>
+                  ${logoOn ? `<label class="check logo-check" title="Show the theatre logo on this image"><input type="checkbox" data-role="logo" ${it.noLogo ? '' : 'checked'}> Logo</label>` : ''}
                   <span class="muted">${g.w}×${g.h}</span>
                 </div>
                 <div class="ad-controls">
@@ -817,7 +860,7 @@
                 </div>
                 <div class="edit-row">
                   ${act.photos.length ? `<button class="btn small ghost" data-role="adjust">${cropLabel(it)}</button>` : ''}
-                  <button class="btn small ghost" data-role="words">${wordsLabel(it)}</button>
+                  <button class="btn small ghost" data-role="words">${wordsLabel(it, logoOn && !it.noLogo)}</button>
                 </div>
                 <div class="adjust-bar" data-bar="crop" hidden>
                   <span class="muted">Drag the picture to move it</span>
@@ -827,7 +870,7 @@
                   <button class="btn small primary" data-role="done">Done</button>
                 </div>
                 <div class="adjust-bar words-bar" data-bar="words" hidden>
-                  <span class="muted">Drag words to move them. Editing: <b data-role="sel-name"></b></span>
+                  <span class="muted">Drag to move. Click to pick. Editing: <b data-role="sel-name"></b></span>
                   <select data-role="text-fx" title="Effect on these words">${R.TEXT_EFFECTS.map((f) => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select>
                   <button class="btn small" data-role="text-smaller" title="Smaller">−</button>
                   <button class="btn small" data-role="text-bigger" title="Bigger">+</button>
@@ -854,6 +897,11 @@
       await save('shows', show);
       renderGallery();
     });
+    $('#galLogo').addEventListener('change', async (e) => {
+      show.logoOn = e.target.checked;
+      await save('shows', show);
+      renderGallery();
+    });
     $('#galAll').addEventListener('click', () => setAllIncluded(show, true));
     $('#galNone').addEventListener('click', () => setAllIncluded(show, false));
     $('#galDownload').addEventListener('click', () => downloadZip());
@@ -869,6 +917,13 @@
           show.excluded = items.filter((x) => !x.included).map((x) => x.key);
           saveShowSoon(show);
           updateDownloadLabel();
+          return;
+        }
+        if (role === 'logo') {
+          it.noLogo = !e.target.checked;
+          card.querySelector('[data-role=words]').textContent = wordsLabel(it, !it.noLogo);
+          saveOverride(show, it);
+          renderCard(card, it, show, act, th);
           return;
         }
         if (role !== 'photo' && role !== 'style') return;
@@ -898,12 +953,13 @@
       photoId: it.photoId, styleId: it.styleId,
       ...(it.adj ? { adj: it.adj } : {}),
       ...(it.text ? { text: it.text } : {}),
+      ...(it.noLogo ? { noLogo: true } : {}),
     };
     saveShowSoon(show);
   }
 
   const cropLabel = (it) => `✥ Adjust crop${it.adj ? ' •' : ''}`;
-  const wordsLabel = (it) => `✎ Edit words${it.text ? ' •' : ''}`;
+  const wordsLabel = (it, withLogo) => `✎ Edit words${withLogo ? ' & logo' : ''}${it.text ? ' •' : ''}`;
 
   // Hand edits on one image: drag/zoom the photo ("crop"), or move/resize/style the words ("words").
   function bindCardEditing(card, it, show, act, th) {
@@ -1005,7 +1061,7 @@
         select(keys.includes(card._lastBlock) ? card._lastBlock : keys[0]);
       }
       if (cropBtn) cropBtn.textContent = cropLabel(it);
-      wordsBtn.textContent = wordsLabel(it);
+      wordsBtn.textContent = wordsLabel(it, !!(show.logoOn && th.logo && !it.noLogo));
       redraw();
     };
 
@@ -1091,7 +1147,9 @@
         if (!block) return;
         if (block !== card._outline) { select(block); redraw(); }
         const t = textOf(block);
-        drag = { kind: 'words', block, x: e.clientX, y: e.clientY, start: { dx: t.dx || 0, dy: t.dy || 0 }, k, bounds: blocks()[block] };
+        // The logo sits in a free corner until moved, so its first drag starts from where it's drawn.
+        const auto = block === 'logo' && canvas._meta.logoOffset ? canvas._meta.logoOffset : { dx: 0, dy: 0 };
+        drag = { kind: 'words', block, x: e.clientX, y: e.clientY, start: { dx: t.dx ?? auto.dx, dy: t.dy ?? auto.dy }, k, bounds: blocks()[block] };
       }
       try { wrap.setPointerCapture(e.pointerId); } catch { /* keeps working without capture */ }
     });
@@ -1180,8 +1238,9 @@
     const photo = act.photos.find((p) => p.id === it.photoId) || null;
     const img = photo ? await loadImage(photo.id, photo.blob).catch(() => null) : null;
     const logoImg = act.logo ? await loadImage(act.logo.id, act.logo.blob).catch(() => null) : null;
+    const theatreLogo = show.logoOn && th.logo && !it.noLogo ? await loadImage(th.logo.id, th.logo.blob).catch(() => null) : null;
     return {
-      w: it.w, h: it.h, scale, act, photo, img, logoImg,
+      w: it.w, h: it.h, scale, act, photo, img, logoImg, theatreLogo,
       styleId: it.styleId, info: R.showInfo(show, th),
       localized: it.row.localized !== false, minimal: !!it.row.minimal, seed: it.key,
       adjust: it.adj || undefined,
@@ -1357,7 +1416,11 @@
         if (a.logo) copy.logo = { ...a.logo, blob: await blobToDataURL(a.logo.blob) };
         acts.push(copy);
       }
-      const data = { app: 'dhp-ad-builder', version: 1, exportedAt: new Date().toISOString(), acts, theatres: state.theatres, shows: state.shows };
+      const theatres = [];
+      for (const t of state.theatres) {
+        theatres.push(t.logo ? { ...t, logo: { ...t.logo, blob: await blobToDataURL(t.logo.blob) } } : t);
+      }
+      const data = { app: 'dhp-ad-builder', version: 1, exportedAt: new Date().toISOString(), acts, theatres, shows: state.shows };
       saveBlob(new Blob([JSON.stringify(data)], { type: 'application/json' }), `ad-builder-backup-${today()}.json`);
       await setLastBackup('backup file');
     } finally {
@@ -1402,7 +1465,13 @@
         }
         await DB.put('acts', a);
       }
-      for (const t of data.theatres) await DB.put('theatres', t);
+      for (const t of data.theatres) {
+        if (t.logo) {
+          const { file, ...rest } = t.logo;
+          t.logo = { ...rest, blob: await photoBlob(t.logo) };
+        }
+        await DB.put('theatres', t);
+      }
       for (const s of data.shows) await DB.put('shows', s);
       await reload();
       refreshView();
@@ -1483,9 +1552,15 @@
       }
       acts.push(copy);
     }
+    const theatres = [];
+    for (const t of state.theatres) {
+      if (!t.logo) { theatres.push(t); continue; }
+      const { blob, ...rest } = t.logo;
+      theatres.push({ ...t, logo: { ...rest, file: await writeImageOnce(photosDir, t.logo.id, blob) } });
+    }
     const json = JSON.stringify({
       app: 'dhp-ad-builder', version: 2, format: 'folder', exportedAt: new Date().toISOString(),
-      acts, theatres: state.theatres, shows: state.shows,
+      acts, theatres, shows: state.shows,
     }, null, 1);
     await writeFile(dir, BACKUP_FILE, json);
     await writeFile(historyDir, `ad-builder-data-${today()}.json`, json);
